@@ -1,0 +1,7 @@
+repos/
+elements/kits
+elements/bottlerocket-core-kit.bst
+elements/bottlerocket-kernel-kit.bst
+.flox/log
+.flox/run
+**/__pycache__
