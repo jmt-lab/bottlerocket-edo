@@ -33,6 +33,7 @@ class RPMElement(Element):
         dictionary = {}
         dictionary['package'] = self.package
         dictionary['arch'] = self.arch
+        dictionary['release-version'] = self.release_version
 
         if any(location for location in self.__layout if location != "/"):
             sorted_locations = sorted(self.__layout)
