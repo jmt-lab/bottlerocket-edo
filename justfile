@@ -8,60 +8,60 @@ clone kit:
 
 sync-code kit:
     #!/usr/bin/env bash
-    element="elements/kits/{{kit}}"
+    element="edo.d/{{kit}}"
     mkdir -p "${element}"
     if [ "{{kit}}" == "bottlerocket-core-kit" ]; then
         gopkgs="[\"host-ctr\"]"
     else
         gopkgs="[]"
     fi
-    cat <<-EOF > "${element}/code.bst"
-    kind: import
-    sources:
-    - kind: vendor
-      path: repos/{{kit}}
-      gopkgs: ${gopkgs}
-    config:
-      target: /src/
+    cat <<-EOF > "${element}/code.bml"
+    transform :import "kits/{{kit}}/code" {
+      source :vendor "git" {
+        path = "repos/{{kit}}"
+        rust = true
+        inside = "sources"
+        out = "."
+        go = ${gopkgs}
+      }
+    }
     EOF
 
 sync-sdk kit:
     #!/usr/bin/env bash
-    element="elements/kits/{{kit}}"
+    element="edo.d/{{kit}}"
     source="repos/{{kit}}"
     registry="$(cat "${source}/Twoliter.toml" | tq --raw .vendor.bottlerocket.registry)"
     repository="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.name)"
     tag="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.version)"
     echo "Registry: ${registry}, Repository = ${repository}, Tag = ${tag}"
-    cat <<EOF > "${element}/sdk.bst"
-    kind: import
-    sources:
-    - kind: oci
-      registry: ${registry}
-      repository: ${repository}
-      tag: v${tag}
+    cat <<EOF > "${element}/sdk.bml"
+    environment :container "{{kit}}-sdk" {
+        url = "${registry}/${repository}:v${tag}"
+        ref = "abcdef"
+    }
     EOF
 
 sync-package kit package:
     #!/usr/bin/env bash
-    element="elements/kits/{{kit}}"
+    element="edo.d/{{kit}}"
     source="repos/{{kit}}"
     version="$(cat ${source}/Twoliter.toml | tq --raw .release-version)"
     pkg_name="$(sed -e 's|packages/||g' <<< "{{package}}")"
     downloads="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .package.metadata.build-package.external-files | jq --raw-output '.[].url' || echo ' ')"
     depend="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .build-dependencies | jq --raw-output '. | keys | .[]' || echo ' ')"
     echo "converting package ${pkg_name} ({{package}})"
-    cat <<-EOF > "${element}/${pkg_name}.bst"
-    kind: rpm
-    build-depends:
-    - kits/{{kit}}/code.bst
-    - kits/{{kit}}/sdk.bst
+    cat <<-EOF > "${element}/${pkg_name}.bml"
+    transform :rpm "kits/{{kit}}/${pkg_name}" {
+      environment = "//{{kit}}-sdk"
+      package     = "${pkg_name}"
+      aarch       = "x86_64"
+      release     = "${version}"
+      depends     = [
+        "//kits/{{kit}}/code"
+      ]
+      requires    = [
     EOF
-    if [ -n "${depend}" ] && [[ "${depend}" != "glibc" ]]; then
-      cat <<'EOF' >> "${element}/${pkg_name}.bst"
-    depends:
-    EOF
-    fi
     for dep in $depend; do
         if [[ "${dep}" == "kernel-5_10" ]]; then
             dep="kernel-5.10"
@@ -72,53 +72,54 @@ sync-package kit package:
         elif [[ "${dep}" == "glibc" ]]; then
             continue
         fi
-        cat <<EOF >> "${element}/${pkg_name}.bst"
-    - kits/{{kit}}/${dep}.bst
+        cat <<-EOF >> "${element}/${pkg_name}.bml"
+          "//kits/{{kit}}/${dep}",
     EOF
     done
-    if [ -n "${downloads}" ]; then
-        cat <<'EOF' >> "${element}/${pkg_name}.bst"
-    sources:
+    cat <<'EOF' >> "${element}/${pkg_name}.bml"
+      ]
     EOF
-    fi
     for item in $downloads; do
-        ref=$(curl -sL "${item}" | sha256sum | awk '{ print $1 }' )
-        cat <<EOF >> "${element}/${pkg_name}.bst"
-    - kind: remote
-      url: ${item}
-      ref: ${ref}
+        filename="$(basename "${item}")"
+        ref=$(curl -sL "${item}" | b3sum | awk '{ print $1 }' )
+        cat <<-EOF >> "${element}/${pkg_name}.bml"
+      source :remote "${filename}" {
+        url = "${item}"
+        ref = "${ref}"
+        out = "${filename}"
+      }
     EOF
     done
-    cat <<EOF >> "${element}/${pkg_name}.bst"
-    config:
-        package: ${pkg_name}
-    EOF
     spec_file="${source}/{{package}}/${pkg_name}.spec"
     go_found="$(cat "${spec_file}" | grep '1.22' || echo "")"
-    cat <<EOF >> "${element}/${pkg_name}.bst"
-        release-version: ${version}
-    EOF
     if [ -n "${go_found}" ]; then
-        cat <<EOF >> "${element}/${pkg_name}.bst"
+        cat <<EOF >> "${element}/${pkg_name}.bml"
         go-version: 1.22.1
     EOF
     fi
+    cat <<EOF >> "${element}/${pkg_name}.bml"
+    }
+    EOF
 
 _sync-packages kit:
     #!/usr/bin/env bash
-    element="elements/kits/{{kit}}"
+    element="edo.d/{{kit}}"
     source="repos/{{kit}}"
-    cat <<-EOF > "${element}/pkgs.bst"
-    kind: compose
-    build-depends:
+    cat <<-EOF > "${element}/pkgs.bml"
+    transform :compose "kits/{{kit}}/pkgs" {
+        depends = [
     EOF
     packages="$(cat "${source}/Cargo.toml" | tq .workspace.members | jq --raw-output '.[] | select(. | match("packages/";"i"))')"
     IFS='\n' read -a package_list <<< "${packages}"
     for package in ${packages[@]}; do
         just sync-package {{kit}} "${package}"
         pkg_name="$(sed -e 's|packages/||g' <<< "${package}")"
-        echo "- kits/{{kit}}/${pkg_name}.bst" >> "${element}/pkgs.bst"
+        echo "'//kits/{{kit}}/${pkg_name}" >> "${element}/pkgs.bml"
     done
+    cat <<-EOF > "${element}/pkgs.bml"
+        ]
+    }
+    EOF
 
 sync kit:
     @rm -rf elements/kits/{{kit}}
