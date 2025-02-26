@@ -38,7 +38,7 @@ sync-sdk kit:
     cat <<EOF > "${element}/sdk.bml"
     environment :container "{{kit}}-sdk" {
         url = "${registry}/${repository}:v${tag}"
-        ref = "abcdef"
+        ref = "7ad59c154207f6a0fc3726a757876d16507d991ed30186f6336dc38658e059ee"
     }
     EOF
 
@@ -55,7 +55,7 @@ sync-package kit package:
     transform :rpm "kits/{{kit}}/${pkg_name}" {
       environment = "//{{kit}}-sdk"
       package     = "${pkg_name}"
-      aarch       = "x86_64"
+      arch        = "x86_64"
       release     = "${version}"
       depends     = [
         "//kits/{{kit}}/code"
@@ -116,7 +116,7 @@ _sync-packages kit:
         pkg_name="$(sed -e 's|packages/||g' <<< "${package}")"
         echo "'//kits/{{kit}}/${pkg_name}" >> "${element}/pkgs.bml"
     done
-    cat <<-EOF > "${element}/pkgs.bml"
+    cat <<-EOF >> "${element}/pkgs.bml"
         ]
     }
     EOF
