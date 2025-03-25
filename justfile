@@ -8,7 +8,7 @@ clone kit:
 
 sync-code kit:
     #!/usr/bin/env bash
-    element="edo.d/{{kit}}"
+    element="kits/{{kit}}"
     mkdir -p "${element}"
     if [ "{{kit}}" == "bottlerocket-core-kit" ]; then
         gopkgs="[\"host-ctr\"]"
@@ -16,7 +16,7 @@ sync-code kit:
         gopkgs="[]"
     fi
     cat <<-EOF > "${element}/code.bml"
-    transform :import "kits/{{kit}}/code" {
+    transform :import "code" {
       source :vendor "git" {
         path = "repos/{{kit}}"
         rust = true
@@ -29,22 +29,26 @@ sync-code kit:
 
 sync-sdk kit:
     #!/usr/bin/env bash
-    element="edo.d/{{kit}}"
+    element="kits/{{kit}}"
     source="repos/{{kit}}"
     registry="$(cat "${source}/Twoliter.toml" | tq --raw .vendor.bottlerocket.registry)"
     repository="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.name)"
     tag="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.version)"
     echo "Registry: ${registry}, Repository = ${repository}, Tag = ${tag}"
     cat <<EOF > "${element}/sdk.bml"
-    environment :container "{{kit}}-sdk" {
-        url = "${registry}/${repository}:v${tag}"
-        ref = "7ad59c154207f6a0fc3726a757876d16507d991ed30186f6336dc38658e059ee"
+    vendor :oci "{{kit}}" {
+        url = "localhost:5000"
+    }
+    environment :container "sdk" {
+        wants :oci "bottlerocket-sdk" {
+            at = ${tag}
+        }
     }
     EOF
 
 sync-package kit package:
     #!/usr/bin/env bash
-    element="edo.d/{{kit}}"
+    element="kits/{{kit}}"
     source="repos/{{kit}}"
     version="$(cat ${source}/Twoliter.toml | tq --raw .release-version)"
     pkg_name="$(sed -e 's|packages/||g' <<< "{{package}}")"
@@ -52,8 +56,8 @@ sync-package kit package:
     depend="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .build-dependencies | jq --raw-output '. | keys | .[]' || echo ' ')"
     echo "converting package ${pkg_name} ({{package}})"
     cat <<-EOF > "${element}/${pkg_name}.bml"
-    transform :rpm "kits/{{kit}}/${pkg_name}" {
-      environment = "//{{kit}}-sdk"
+    transform :rpm "${pkg_name}" {
+      environment = "//kits/{{kit}}/sdk"
       package     = "${pkg_name}"
       arch        = "x86_64"
       release     = "${version}"
@@ -94,7 +98,7 @@ sync-package kit package:
     go_found="$(cat "${spec_file}" | grep '1.22' || echo "")"
     if [ -n "${go_found}" ]; then
         cat <<EOF >> "${element}/${pkg_name}.bml"
-        go-version: 1.22.1
+        go-version = "1.22.1"
     EOF
     fi
     cat <<EOF >> "${element}/${pkg_name}.bml"
@@ -103,10 +107,10 @@ sync-package kit package:
 
 _sync-packages kit:
     #!/usr/bin/env bash
-    element="edo.d/{{kit}}"
+    element="kits/{{kit}}"
     source="repos/{{kit}}"
     cat <<-EOF > "${element}/pkgs.bml"
-    transform :compose "kits/{{kit}}/pkgs" {
+    transform :compose "pkgs" {
         depends = [
     EOF
     packages="$(cat "${source}/Cargo.toml" | tq .workspace.members | jq --raw-output '.[] | select(. | match("packages/";"i"))')"
@@ -114,7 +118,7 @@ _sync-packages kit:
     for package in ${packages[@]}; do
         just sync-package {{kit}} "${package}"
         pkg_name="$(sed -e 's|packages/||g' <<< "${package}")"
-        echo "'//kits/{{kit}}/${pkg_name}" >> "${element}/pkgs.bml"
+        echo "'//kits/{{kit}}/${pkg_name}'," >> "${element}/pkgs.bml"
     done
     cat <<-EOF >> "${element}/pkgs.bml"
         ]
@@ -122,7 +126,7 @@ _sync-packages kit:
     EOF
 
 sync kit:
-    @rm -rf elements/kits/{{kit}}
+    @rm -rf kits/{{kit}}
     @echo "create code element"
     @just sync-code {{kit}}
     @echo "create sdk element"
