@@ -15,7 +15,7 @@ sync-code kit:
     else
         gopkgs="[]"
     fi
-    cat <<-EOF > "${element}/code.bml"
+    cat <<-EOF > "${element}/code.edo.bml"
     transform :import "code" {
       source :vendor "git" {
         path = "repos/{{kit}}"
@@ -35,7 +35,7 @@ sync-sdk kit:
     repository="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.name)"
     tag="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.version)"
     echo "Registry: ${registry}, Repository = ${repository}, Tag = ${tag}"
-    cat <<EOF > "${element}/sdk.bml"
+    cat <<EOF > "${element}/sdk.edo.bml"
     vendor :oci "{{kit}}" {
         url = "localhost:5000"
     }
@@ -55,8 +55,8 @@ sync-package kit package:
     downloads="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .package.metadata.build-package.external-files | jq --raw-output '.[].url' || echo ' ')"
     depend="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .build-dependencies | jq --raw-output '. | keys | .[]' || echo ' ')"
     echo "converting package ${pkg_name} ({{package}})"
-    cat <<-EOF > "${element}/${pkg_name}.bml"
-    transform :rpm "${pkg_name}" {
+    cat <<-EOF > "${element}/${pkg_name}.edo.bml"
+    transform "bplugin:rpm" "${pkg_name}" {
       environment = "//kits/{{kit}}/sdk"
       package     = "${pkg_name}"
       arch        = "x86_64"
@@ -76,17 +76,17 @@ sync-package kit package:
         elif [[ "${dep}" == "glibc" ]]; then
             continue
         fi
-        cat <<-EOF >> "${element}/${pkg_name}.bml"
+        cat <<-EOF >> "${element}/${pkg_name}.edo.bml"
           "//kits/{{kit}}/${dep}",
     EOF
     done
-    cat <<'EOF' >> "${element}/${pkg_name}.bml"
+    cat <<'EOF' >> "${element}/${pkg_name}.edo.bml"
       ]
     EOF
     for item in $downloads; do
         filename="$(basename "${item}")"
         ref=$(curl -sL "${item}" | b3sum | awk '{ print $1 }' )
-        cat <<-EOF >> "${element}/${pkg_name}.bml"
+        cat <<-EOF >> "${element}/${pkg_name}.edo.bml"
       source :remote "${filename}" {
         url = "${item}"
         ref = "${ref}"
@@ -97,11 +97,11 @@ sync-package kit package:
     spec_file="${source}/{{package}}/${pkg_name}.spec"
     go_found="$(cat "${spec_file}" | grep '1.22' || echo "")"
     if [ -n "${go_found}" ]; then
-        cat <<EOF >> "${element}/${pkg_name}.bml"
+        cat <<EOF >> "${element}/${pkg_name}.edo.bml"
         go-version = "1.22.1"
     EOF
     fi
-    cat <<EOF >> "${element}/${pkg_name}.bml"
+    cat <<EOF >> "${element}/${pkg_name}.edo.bml"
     }
     EOF
 
@@ -109,7 +109,7 @@ _sync-packages kit:
     #!/usr/bin/env bash
     element="kits/{{kit}}"
     source="repos/{{kit}}"
-    cat <<-EOF > "${element}/pkgs.bml"
+    cat <<-EOF > "${element}/pkgs.edo.bml"
     transform :compose "pkgs" {
         depends = [
     EOF
@@ -118,9 +118,9 @@ _sync-packages kit:
     for package in ${packages[@]}; do
         just sync-package {{kit}} "${package}"
         pkg_name="$(sed -e 's|packages/||g' <<< "${package}")"
-        echo "'//kits/{{kit}}/${pkg_name}'," >> "${element}/pkgs.bml"
+        echo "'//kits/{{kit}}/${pkg_name}'," >> "${element}/pkgs.edo.bml"
     done
-    cat <<-EOF >> "${element}/pkgs.bml"
+    cat <<-EOF >> "${element}/pkgs.edo.bml"
         ]
     }
     EOF
