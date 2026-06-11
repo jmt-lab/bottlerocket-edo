@@ -1,0 +1,26 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/soci-snapshotter"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "soci-snapshotter"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libz/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/soci-snapshotter/src",
+]
+archives = [
+      "//packages/soci-snapshotter/soci-snapshotter-0.13.0.tar.gz",
+      "//packages/soci-snapshotter/soci-snapshotter-0.13.0.tar.gz",
+]
+[source."soci-snapshotter-0.13.0.tar.gz"]
+kind = "remote"
+url  = "https://github.com/awslabs/soci-snapshotter/archive/v0.13.0/soci-snapshotter-0.13.0.tar.gz"
+ref  = "f44e775872c4c87e3847ce46370d975627329092cb4e96e27319ca6c984d63f2"
+out  = "soci-snapshotter-0.13.0.tar.gz"

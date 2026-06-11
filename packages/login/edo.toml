@@ -1,0 +1,18 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/login"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "login"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/login/src",
+]
+archives = [
+]

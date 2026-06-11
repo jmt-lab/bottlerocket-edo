@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/runc"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "runc"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libseccomp/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/runc/src",
+]
+archives = [
+      "//packages/runc/runc.tar.xz",
+      "//packages/runc/runc.tar.xz.asc",
+]
+  [source."runc.tar.xz"]
+  kind = "remote"
+  url  = "https://github.com/opencontainers/runc/releases/download/v1.3.5/runc.tar.xz"
+  ref  = "aa2888d7a33cde4dfc27e03ff034c072cb57a2535fa364296961d851432feadc"
+  out  = "runc.tar.xz"
+  [source."runc.tar.xz.asc"]
+  kind = "remote"
+  url  = "https://github.com/opencontainers/runc/releases/download/v1.3.5/runc.tar.xz.asc"
+  ref  = "36a3b6ccb6ba73a432c9b7b3417ea629bc124b30d7ee5bf98ad2442b439b5aba"
+  out  = "runc.tar.xz.asc"

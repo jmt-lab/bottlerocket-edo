@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/ecr-credential-provider-1.31"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "ecr-credential-provider-1.31"
+depends = [
+      "//packages/glibc/rpm",
+]
+bundled = {
+    "//packages/ecr-credential-provider-1.31/bundled" = "bundled-cloud-provider-aws-1.31.9.tar.gz"
+}
+[transform.rpm.source]
+sources = [
+    "//packages/ecr-credential-provider-1.31/src",
+]
+archives = [
+      "//packages/ecr-credential-provider-1.31/v1.31.9.tar.gz",
+]
+[source."v1.31.9.tar.gz"]
+kind = "remote"
+url  = "https://github.com/kubernetes/cloud-provider-aws/archive/v1.31.9.tar.gz"
+ref  = "5c266cd8bbe3b5294dd34ee934836de4c25805890445b5344ecd22677a8cbbd4"
+out  = "cloud-provider-aws-1.31.9.tar.gz"
+[transform.bundled]
+kind = "go-vendor"
+environment  = "//kits/bottlerocket-core-kit/sdk-open"
+source = "v1.31.9.tar.gz"
+modules = ["cloud-provider-aws-1.31.9"]

@@ -1,0 +1,26 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/docker-engine-25"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "docker-engine-25"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libseccomp/rpm",
+      "//packages/systemd-252/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/docker-engine-25/src",
+]
+archives = [
+      "//packages/docker-engine-25/moby-25.0.13.tar.gz",
+]
+  [source."moby-25.0.13.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/moby/moby/archive/v25.0.13/moby-25.0.13.tar.gz"
+  ref  = "dd0a96581c4fd552eb043aec8efc217f3c6a94f384606feeb3986ca54629aa23"
+  out  = "moby-25.0.13.tar.gz"

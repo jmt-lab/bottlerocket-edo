@@ -1,0 +1,24 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/amazon-vpc-cni-plugins"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "amazon-vpc-cni-plugins"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/amazon-vpc-cni-plugins/src",
+]
+archives = [
+      "//packages/amazon-vpc-cni-plugins/amazon-vpc-cni-plugins.tar.gz",
+]
+  [source."amazon-vpc-cni-plugins.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/aws/amazon-vpc-cni-plugins/archive/a4e9ac076709c882a904afabc4c24c7700600f6b/amazon-vpc-cni-plugins.tar.gz"
+  ref  = "2156093f5840cf8359a2ced58eff905ddc1559d643d0579ec38dfb9cb82260ba"
+  out  = "amazon-vpc-cni-plugins.tar.gz"

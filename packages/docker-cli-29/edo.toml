@@ -1,0 +1,24 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/docker-cli-29"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "docker-cli-29"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/docker-cli-29/src",
+]
+archives = [
+      "//packages/docker-cli-29/cli-29.0.4.tar.gz",
+]
+  [source."cli-29.0.4.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/docker/cli/archive/v29.0.4/cli-29.0.4.tar.gz"
+  ref  = "80bff23056f0c917ad5b8edfb473bc864f674c4f0b45c40d2178a983489739af"
+  out  = "cli-29.0.4.tar.gz"

@@ -1,0 +1,30 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libncurses"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libncurses"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libncurses/src",
+]
+archives = [
+      "//packages/libncurses/ncurses-6.6-20260418.tgz",
+      "//packages/libncurses/ncurses-6.6-20260418.tgz.asc",
+]
+  [source."ncurses-6.6-20260418.tgz"]
+  kind = "remote"
+  url  = "https://invisible-mirror.net/archives/ncurses/current/ncurses-6.6-20260418.tgz"
+  ref  = "18b7662c0fff740c1b3ffd7d390138f3b34064de39ede45bf460fd47e849888e"
+  out  = "ncurses-6.6-20260418.tgz"
+  [source."ncurses-6.6-20260418.tgz.asc"]
+  kind = "remote"
+  url  = "https://invisible-mirror.net/archives/ncurses/current/ncurses-6.6-20260418.tgz.asc"
+  ref  = "c8b568c359a3c531744b7eeed3275b16461c2140db94432966f8b32836de79ea"
+  out  = "ncurses-6.6-20260418.tgz.asc"

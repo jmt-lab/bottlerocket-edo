@@ -1,0 +1,30 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libsepol"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libsepol"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libsepol/src",
+]
+archives = [
+      "//packages/libsepol/libsepol-3.8.1.tar.gz",
+      "//packages/libsepol/libsepol-3.8.1.tar.gz.asc",
+]
+  [source."libsepol-3.8.1.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/SELinuxProject/selinux/releases/download/3.8.1/libsepol-3.8.1.tar.gz"
+  ref  = "7885544c53ea41303a5f6d504f169103ccef0342589ad0d791a2b37b927d09db"
+  out  = "libsepol-3.8.1.tar.gz"
+  [source."libsepol-3.8.1.tar.gz.asc"]
+  kind = "remote"
+  url  = "https://github.com/SELinuxProject/selinux/releases/download/3.8.1/libsepol-3.8.1.tar.gz.asc"
+  ref  = "8558bf3dec625b2a91b34a07032c21c44d0494261c30fd2cf2607105eea84fb9"
+  out  = "libsepol-3.8.1.tar.gz.asc"

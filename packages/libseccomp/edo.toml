@@ -1,0 +1,30 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libseccomp"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libseccomp"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libseccomp/src",
+]
+archives = [
+      "//packages/libseccomp/libseccomp-2.6.0.tar.gz",
+      "//packages/libseccomp/libseccomp-2.6.0.tar.gz.asc",
+]
+  [source."libseccomp-2.6.0.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/seccomp/libseccomp/releases/download/v2.6.0/libseccomp-2.6.0.tar.gz"
+  ref  = "48ba4e04a00bdace5ad130d88e2a1a51d0b3dfdabace9a405b404a50e1afdd56"
+  out  = "libseccomp-2.6.0.tar.gz"
+  [source."libseccomp-2.6.0.tar.gz.asc"]
+  kind = "remote"
+  url  = "https://github.com/seccomp/libseccomp/releases/download/v2.6.0/libseccomp-2.6.0.tar.gz.asc"
+  ref  = "2dcec03c1132f9d99b9c90edcb10d10111e6664a22c47f4a145dcd9649e213f7"
+  out  = "libseccomp-2.6.0.tar.gz.asc"

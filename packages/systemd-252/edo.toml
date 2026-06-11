@@ -1,0 +1,35 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/systemd-252"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "systemd-252"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/kmod/rpm",
+      "//packages/libacl/rpm",
+      "//packages/libattr/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libcrypto/rpm",
+      "//packages/libcryptsetup/rpm",
+      "//packages/libseccomp/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libtss2/rpm",
+      "//packages/libxcrypt/rpm",
+      "//packages/util-linux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/systemd-252/src",
+]
+archives = [
+      "//packages/systemd-252/systemd-stable-252.39.tar.gz",
+]
+  [source."systemd-stable-252.39.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/systemd/systemd-stable/archive/v252.39/systemd-stable-252.39.tar.gz"
+  ref  = "11e60c6b0376f6bd42078732fdcec990a7f705295276ec63c338fad01616ee41"
+  out  = "systemd-stable-252.39.tar.gz"

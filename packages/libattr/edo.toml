@@ -1,0 +1,30 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libattr"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libattr"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libattr/src",
+]
+archives = [
+      "//packages/libattr/attr-2.5.2.tar.xz",
+      "//packages/libattr/attr-2.5.2.tar.xz.sig",
+]
+  [source."attr-2.5.2.tar.xz"]
+  kind = "remote"
+  url  = "https://download-mirror.savannah.gnu.org/releases/attr/attr-2.5.2.tar.xz"
+  ref  = "d0831671ff83c7195b184b41a6052d1f05ed75b06bacea61dc19038c31d32204"
+  out  = "attr-2.5.2.tar.xz"
+  [source."attr-2.5.2.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://download-mirror.savannah.gnu.org/releases/attr/attr-2.5.2.tar.xz.sig"
+  ref  = "df4309c6177e18b304c27b2019f5f191124d8ccb5636ec9b470778705ecdf9f9"
+  out  = "attr-2.5.2.tar.xz.sig"

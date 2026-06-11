@@ -1,0 +1,5 @@
+schema-version = "1"
+
+[config.bottlerocket]
+release-version = "v5.4.0"
+build-timestamp = "1778705221"

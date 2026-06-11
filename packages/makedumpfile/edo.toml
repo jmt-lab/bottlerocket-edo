@@ -1,0 +1,26 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/makedumpfile"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "makedumpfile"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libelf/rpm",
+      "//packages/libz/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/makedumpfile/src",
+]
+archives = [
+      "//packages/makedumpfile/makedumpfile-1.7.8.tar.gz",
+]
+  [source."makedumpfile-1.7.8.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/makedumpfile/makedumpfile/archive/1.7.8/makedumpfile-1.7.8.tar.gz"
+  ref  = "a4cea4eb44d92b90a6045970a56e537cb77a8adeeb633dfa2a7076a42833c743"
+  out  = "makedumpfile-1.7.8.tar.gz"

@@ -1,0 +1,28 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/erofs-utils"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "erofs-utils"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libz/rpm",
+      "//packages/libzstd/rpm",
+      "//packages/util-linux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/erofs-utils/src",
+]
+archives = [
+      "//packages/erofs-utils/erofs-utils-1.8.10.tar.gz",
+]
+  [source."erofs-utils-1.8.10.tar.gz"]
+  kind = "remote"
+  url  = "https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-1.8.10.tar.gz"
+  ref  = "20d2e27146b8056f538702de1a35dd22d317573aa2d9c18d7fc735c5235b53a1"
+  out  = "erofs-utils-1.8.10.tar.gz"

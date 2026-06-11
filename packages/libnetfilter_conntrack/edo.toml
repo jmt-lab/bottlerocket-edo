@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libnetfilter_conntrack"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libnetfilter_conntrack"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libmnl/rpm",
+      "//packages/libnfnetlink/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libnetfilter_conntrack/src",
+]
+archives = [
+      "//packages/libnetfilter_conntrack/libnetfilter_conntrack-1.1.1.tar.xz",
+      "//packages/libnetfilter_conntrack/libnetfilter_conntrack-1.1.1.tar.xz.sig",
+]
+  [source."libnetfilter_conntrack-1.1.1.tar.xz"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_conntrack/files/libnetfilter_conntrack-1.1.1.tar.xz"
+  ref  = "a87f1257a8399b333e234d0eb0af22a251d568c7cab36d9b79079b567fa47e18"
+  out  = "libnetfilter_conntrack-1.1.1.tar.xz"
+  [source."libnetfilter_conntrack-1.1.1.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_conntrack/files/libnetfilter_conntrack-1.1.1.tar.xz.sig"
+  ref  = "7ce6b492d4bfa0d7f8734003a82a1df037b26d86785ac6388e00ca6efcda906a"
+  out  = "libnetfilter_conntrack-1.1.1.tar.xz.sig"

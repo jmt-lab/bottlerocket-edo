@@ -1,0 +1,24 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/kubernetes-1.32"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "kubernetes-1.32"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/kubernetes-1.32/src",
+]
+archives = [
+      "//packages/kubernetes-1.32/kubernetes-src.tar.gz",
+]
+  [source."kubernetes-src.tar.gz"]
+  kind = "remote"
+  url  = "https://distro.eks.amazonaws.com/kubernetes-1-32/releases/37/artifacts/kubernetes/v1.32.13/kubernetes-src.tar.gz"
+  ref  = "01d81facea347e8f6c4c6fe563bb8c131ce0bc92402f5a7e1fe591f25842a772"
+  out  = "kubernetes-src.tar.gz"

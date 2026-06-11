@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/ethtool"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "ethtool"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libmnl/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/ethtool/src",
+]
+archives = [
+      "//packages/ethtool/ethtool-6.19.tar.xz",
+      "//packages/ethtool/ethtool-6.19.tar.sign",
+]
+  [source."ethtool-6.19.tar.xz"]
+  kind = "remote"
+  url  = "https://mirrors.edge.kernel.org/pub/software/network/ethtool/ethtool-6.19.tar.xz"
+  ref  = "48c8019e6481ac2df9878139fbe8de158b24e5a283027a90b2afe897ce9e2622"
+  out  = "ethtool-6.19.tar.xz"
+  [source."ethtool-6.19.tar.sign"]
+  kind = "remote"
+  url  = "https://mirrors.edge.kernel.org/pub/software/network/ethtool/ethtool-6.19.tar.sign"
+  ref  = "2460cd048e0147c2246d7d25d21e64c7139c8ac742b4dd27c7a29f21dd4ede13"
+  out  = "ethtool-6.19.tar.sign"

@@ -1,0 +1,17 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/filesystem"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "filesystem"
+depends = [
+]
+[transform.rpm.source]
+sources = [
+    "//packages/filesystem/src",
+]
+archives = [
+]

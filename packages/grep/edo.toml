@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/grep"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "grep"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libpcre/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/grep/src",
+]
+archives = [
+      "//packages/grep/grep-3.12.tar.xz",
+      "//packages/grep/grep-3.12.tar.xz.sig",
+]
+  [source."grep-3.12.tar.xz"]
+  kind = "remote"
+  url  = "https://mirrors.kernel.org/gnu/grep/grep-3.12.tar.xz"
+  ref  = "e15c2e03ff6e9e7e8fb7c726539e10b6ff17ecfc3d6961f7419e948d31043f4f"
+  out  = "grep-3.12.tar.xz"
+  [source."grep-3.12.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://mirrors.kernel.org/gnu/grep/grep-3.12.tar.xz.sig"
+  ref  = "f9f88ad29919f24ecf3ba8760d95a861c0e2368a623657154497865a0c9c6799"
+  out  = "grep-3.12.tar.xz.sig"

@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/tpm2-tools"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "tpm2-tools"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libtss2/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/tpm2-tools/src",
+]
+archives = [
+      "//packages/tpm2-tools/tpm2-tools-5.7.tar.gz",
+      "//packages/tpm2-tools/tpm2-tools-5.7.tar.gz.asc",
+]
+  [source."tpm2-tools-5.7.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/tpm2-software/tpm2-tools/releases/download/5.7/tpm2-tools-5.7.tar.gz"
+  ref  = "09e88592b33c6421e21320f367d46149214adfccb2c721f5b254271e8aae659a"
+  out  = "tpm2-tools-5.7.tar.gz"
+  [source."tpm2-tools-5.7.tar.gz.asc"]
+  kind = "remote"
+  url  = "https://github.com/tpm2-software/tpm2-tools/releases/download/5.7/tpm2-tools-5.7.tar.gz.asc"
+  ref  = "37c1be0769881a18146731f44a4520b48011a68a483526dad86a42c1c9d01c3e"
+  out  = "tpm2-tools-5.7.tar.gz.asc"

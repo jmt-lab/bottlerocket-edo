@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libcap"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libcap"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libattr/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libcap/src",
+]
+archives = [
+      "//packages/libcap/libcap-2.78.tar.gz",
+      "//packages/libcap/libcap-2.78.tar.sign",
+]
+  [source."libcap-2.78.tar.gz"]
+  kind = "remote"
+  url  = "https://cdn.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.78.tar.gz"
+  ref  = "24adc56cf7e667f365ca0d83c90e8f985723fc26420bfafbc557a22a719376ac"
+  out  = "libcap-2.78.tar.gz"
+  [source."libcap-2.78.tar.sign"]
+  kind = "remote"
+  url  = "https://cdn.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.78.tar.sign"
+  ref  = "1d0b374b9438043be2767672f5bfb162ab675eb55710557a109e284dc7088bf7"
+  out  = "libcap-2.78.tar.sign"

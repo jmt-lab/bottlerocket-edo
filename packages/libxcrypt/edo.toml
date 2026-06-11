@@ -1,0 +1,30 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libxcrypt"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libxcrypt"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libxcrypt/src",
+]
+archives = [
+      "//packages/libxcrypt/libxcrypt-4.5.2.tar.xz",
+      "//packages/libxcrypt/libxcrypt-4.5.2.tar.xz.asc",
+]
+  [source."libxcrypt-4.5.2.tar.xz"]
+  kind = "remote"
+  url  = "https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz"
+  ref  = "8294e7735d240876f4c4c38a1370e1e9e9e2da4856fcfcb81168ea20ab83f33d"
+  out  = "libxcrypt-4.5.2.tar.xz"
+  [source."libxcrypt-4.5.2.tar.xz.asc"]
+  kind = "remote"
+  url  = "https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz.asc"
+  ref  = "7a326d1a1f41cc40b7fc796b6d91d8672eb46c9dcc5965a56012cc27261ad7af"
+  out  = "libxcrypt-4.5.2.tar.xz.asc"

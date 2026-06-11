@@ -1,0 +1,25 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/nvidia-container-toolkit"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "nvidia-container-toolkit"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libnvidia-container/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/nvidia-container-toolkit/src",
+]
+archives = [
+      "//packages/nvidia-container-toolkit/nvidia-container-toolkit-1.18.2.tar.gz",
+]
+[source."nvidia-container-toolkit-1.18.2.tar.gz"]
+kind = "remote"
+url  = "https://github.com/NVIDIA/nvidia-container-toolkit/archive/v1.18.2/nvidia-container-toolkit-1.18.2.tar.gz"
+ref  = "bbb3ce96198c385f4e11ed8e12531ecc00df81f297ee72887b61f7963d48dbfe"
+out  = "nvidia-container-toolkit-1.18.2.tar.gz"

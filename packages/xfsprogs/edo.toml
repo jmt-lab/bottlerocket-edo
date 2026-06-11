@@ -1,0 +1,33 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/xfsprogs"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "xfsprogs"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libinih/rpm",
+      "//packages/liburcu/rpm",
+      "//packages/util-linux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/xfsprogs/src",
+]
+archives = [
+      "//packages/xfsprogs/xfsprogs-6.19.0.tar.xz",
+      "//packages/xfsprogs/xfsprogs-6.19.0.tar.sign",
+]
+  [source."xfsprogs-6.19.0.tar.xz"]
+  kind = "remote"
+  url  = "http://kernel.org/pub/linux/utils/fs/xfs/xfsprogs/xfsprogs-6.19.0.tar.xz"
+  ref  = "60a477fba51a897e7fcd4e37633229a04679f5fd615c7099bf7224f9759c3115"
+  out  = "xfsprogs-6.19.0.tar.xz"
+  [source."xfsprogs-6.19.0.tar.sign"]
+  kind = "remote"
+  url  = "http://kernel.org/pub/linux/utils/fs/xfs/xfsprogs/xfsprogs-6.19.0.tar.sign"
+  ref  = "8b1c4fc192a3209d9de362e053050820c127184b9f9436c49e923bf3d90623ce"
+  out  = "xfsprogs-6.19.0.tar.sign"

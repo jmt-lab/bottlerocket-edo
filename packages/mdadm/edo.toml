@@ -1,0 +1,25 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/mdadm"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "mdadm"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/systemd-252/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/mdadm/src",
+]
+archives = [
+      "//packages/mdadm/mdadm-4.6.tar.gz",
+]
+  [source."mdadm-4.6.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/md-raid-utilities/mdadm/archive/mdadm-4.6/mdadm-4.6.tar.gz"
+  ref  = "8ea748f9880bc707d5cf94fafa35f1dc4085a39b4f0f52ea1e394d24089f38a7"
+  out  = "mdadm-4.6.tar.gz"

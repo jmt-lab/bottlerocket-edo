@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libnetfilter_queue"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libnetfilter_queue"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libmnl/rpm",
+      "//packages/libnfnetlink/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libnetfilter_queue/src",
+]
+archives = [
+      "//packages/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2",
+      "//packages/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2.sig",
+]
+  [source."libnetfilter_queue-1.0.5.tar.bz2"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_queue/files/libnetfilter_queue-1.0.5.tar.bz2"
+  ref  = "8bef9ae6cb11ad4bd2916b571d3b9a3ccb6bc0f0628e321107b53153de24fc8a"
+  out  = "libnetfilter_queue-1.0.5.tar.bz2"
+  [source."libnetfilter_queue-1.0.5.tar.bz2.sig"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_queue/files/libnetfilter_queue-1.0.5.tar.bz2.sig"
+  ref  = "f19b635925ea8cdaa92755f2ed921b90c52129799676e3ea167c79a919a37066"
+  out  = "libnetfilter_queue-1.0.5.tar.bz2.sig"

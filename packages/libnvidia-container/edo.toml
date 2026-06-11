@@ -1,0 +1,34 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libnvidia-container"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libnvidia-container"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libelf/rpm",
+      "//packages/libseccomp/rpm",
+      "//packages/libtirpc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libnvidia-container/src",
+]
+archives = [
+      "//packages/libnvidia-container/libnvidia-container-1.18.2.tar.gz",
+      "//packages/libnvidia-container/nvidia-modprobe-550.54.14.tar.gz",
+]
+  [source."libnvidia-container-1.18.2.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/NVIDIA/libnvidia-container/archive/v1.18.2/libnvidia-container-1.18.2.tar.gz"
+  ref  = "6103784944b22e9fd927df25170fb7b7de1a600583a984a3b3bdd9f4f047b962"
+  out  = "libnvidia-container-1.18.2.tar.gz"
+  [source."nvidia-modprobe-550.54.14.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/NVIDIA/nvidia-modprobe/archive/550.54.14/nvidia-modprobe-550.54.14.tar.gz"
+  ref  = "93db47bb0f178c108cae0946c30e477ad27a5e665228b5e0bc7803610e68c5d7"
+  out  = "nvidia-modprobe-550.54.14.tar.gz"

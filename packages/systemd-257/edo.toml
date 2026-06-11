@@ -1,0 +1,35 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/systemd-257"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "systemd-257"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/kmod/rpm",
+      "//packages/libacl/rpm",
+      "//packages/libattr/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libcrypto/rpm",
+      "//packages/libcryptsetup/rpm",
+      "//packages/libseccomp/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libtss2/rpm",
+      "//packages/libxcrypt/rpm",
+      "//packages/util-linux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/systemd-257/src",
+]
+archives = [
+      "//packages/systemd-257/systemd-257.9.tar.gz",
+]
+  [source."systemd-257.9.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/systemd/systemd/archive/v257.9/systemd-257.9.tar.gz"
+  ref  = "4104aa899cc2cc4255389c1cbd87bac2a8d745d9627e1eedaa050a327714fd45"
+  out  = "systemd-257.9.tar.gz"

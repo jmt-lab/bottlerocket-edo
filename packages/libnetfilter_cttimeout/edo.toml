@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libnetfilter_cttimeout"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libnetfilter_cttimeout"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libmnl/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libnetfilter_cttimeout/src",
+]
+archives = [
+      "//packages/libnetfilter_cttimeout/libnetfilter_cttimeout-1.0.1.tar.bz2",
+      "//packages/libnetfilter_cttimeout/libnetfilter_cttimeout-1.0.1.tar.bz2.sig",
+]
+  [source."libnetfilter_cttimeout-1.0.1.tar.bz2"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_cttimeout/files/libnetfilter_cttimeout-1.0.1.tar.bz2"
+  ref  = "c5b891b1854ac32e04f63e0e58138f2e11db56d58eb0c91e939d054f108905d9"
+  out  = "libnetfilter_cttimeout-1.0.1.tar.bz2"
+  [source."libnetfilter_cttimeout-1.0.1.tar.bz2.sig"]
+  kind = "remote"
+  url  = "https://netfilter.org/projects/libnetfilter_cttimeout/files/libnetfilter_cttimeout-1.0.1.tar.bz2.sig"
+  ref  = "add1c320c90d2b2698f58a295a501997d4f518660fb9d16eb0ff16c1361d2c21"
+  out  = "libnetfilter_cttimeout-1.0.1.tar.bz2.sig"

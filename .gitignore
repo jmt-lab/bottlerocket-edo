@@ -5,3 +5,4 @@ elements/bottlerocket-kernel-kit.bst
 .flox/log
 .flox/run
 **/__pycache__
+.edo

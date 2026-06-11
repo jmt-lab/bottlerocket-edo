@@ -1,0 +1,29 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libglib"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libglib"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libffi/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libz/rpm",
+      "//packages/util-linux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libglib/src",
+]
+archives = [
+      "//packages/libglib/glib-2.86.5.tar.xz",
+]
+  [source."glib-2.86.5.tar.xz"]
+  kind = "remote"
+  url  = "https://download.gnome.org/sources/glib/2.86/glib-2.86.5.tar.xz"
+  ref  = "c68e54dfe47744bfd0307179847574445f6e88490f8856fcdf90e59eaa57e3f8"
+  out  = "glib-2.86.5.tar.xz"

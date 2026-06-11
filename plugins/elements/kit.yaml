@@ -1,4 +1,0 @@
-config:
-  name: bottlerocket-kit
-  sdk: 0.50.1
-  release-version: 1.0.0

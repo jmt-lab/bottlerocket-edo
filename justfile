@@ -1,31 +1,37 @@
-github := "jmt-lab"
+github := "bottlerocket-os"
 
 setup:
     cargo install tomlq
 
 clone kit:
-    git clone git@github.com:{{github}}/{{kit}}.git repos/{{kit}}
+    git clone https://github.com/{{github}}/{{kit}}.git repos/{{kit}}
 
 sync-code kit:
     #!/usr/bin/env bash
     element="kits/{{kit}}"
     mkdir -p "${element}"
-    if [ "{{kit}}" == "bottlerocket-core-kit" ]; then
-        gopkgs="[\"host-ctr\"]"
-    else
-        gopkgs="[]"
-    fi
-    cat <<-EOF > "${element}/code.edo.bml"
-    transform :import "code" {
-      source :vendor "git" {
-        path = "repos/{{kit}}"
-        rust = true
-        inside = "sources"
-        out = "."
-        go = ${gopkgs}
-      }
-    }
+    cat <<-EOF > "${element}/edo.toml"
+    schema-version = "1"
+
+    [source.code]
+    kind = "local"
+    path = "repos/{{kit}}"
+    out  = "."
+
+    [transform.cargo-vendor]
+    kind = "cargo-vendor"
+    source = ["code"]
+    cargo-tomls = { "code" = ["sources/Cargo.toml"] }
     EOF
+
+    if [ "{{kit}}" == "bottlerocket-core-kit" ]; then
+        cat <<-EOF >> "${element}/edo.toml"
+        [transform.go-vendor]
+        kind = "go-vendor"
+        source = ["code"]
+        modules = [ "sources/host-ctr" ]
+    EOF
+    fi
 
 sync-sdk kit:
     #!/usr/bin/env bash
@@ -35,36 +41,43 @@ sync-sdk kit:
     repository="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.name)"
     tag="$(cat "${source}/Twoliter.toml" | tq --raw .sdk.version)"
     echo "Registry: ${registry}, Repository = ${repository}, Tag = ${tag}"
-    cat <<EOF > "${element}/sdk.edo.bml"
-    vendor :oci "{{kit}}" {
-        url = "localhost:5000"
-    }
-    environment :container "sdk" {
-        wants :oci "bottlerocket-sdk" {
-            at = ${tag}
-        }
-    }
+    cat <<EOF >> "${element}/edo.toml"
+    [vendor.{{kit}}]
+    kind = "image"
+    uri  = "${registry}"
+
+    [requires.bottlerocket-sdk]
+    kind = "image"
+    at   = "=${tag}"
+
+    [environment.sdk]
+    kind = "container"
+    user = "root"
+    source = ["bottlerocket-sdk"]
     EOF
 
 sync-package kit package:
     #!/usr/bin/env bash
-    element="kits/{{kit}}"
+    element="{{package}}"
+    mkdir -p "${element}"
     source="repos/{{kit}}"
     version="$(cat ${source}/Twoliter.toml | tq --raw .release-version)"
     pkg_name="$(sed -e 's|packages/||g' <<< "{{package}}")"
     downloads="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .package.metadata.build-package.external-files | jq --raw-output '.[].url' || echo ' ')"
     depend="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .build-dependencies | jq --raw-output '. | keys | .[]' || echo ' ')"
+    source_groups="$(cat "${source}/{{package}}/Cargo.toml" | tq -o json .package.metadata.build-package.source-groups 2>/dev/null | jq --raw-output 'if . == null then "" else .[] end' || echo '')"
     echo "converting package ${pkg_name} ({{package}})"
-    cat <<-EOF > "${element}/${pkg_name}.edo.bml"
-    transform "bplugin:rpm" "${pkg_name}" {
-      environment = "//kits/{{kit}}/sdk"
-      package     = "${pkg_name}"
-      arch        = "x86_64"
-      release     = "${version}"
-      depends     = [
-        "//kits/{{kit}}/code"
-      ]
-      requires    = [
+    cat <<-EOF > "${element}/edo.toml"
+    schema-version = "1"
+    [source.src]
+    kind    = "local"
+    path    = "repos/{{kit}}/packages/${pkg_name}"
+    out     = "."
+    [transform.rpm]
+    kind    = "rpm"
+    sdk     = "//kits/{{kit}}/sdk"
+    package = "${pkg_name}"
+    depends = [
     EOF
     for dep in $depend; do
         if [[ "${dep}" == "kernel-5_10" ]]; then
@@ -73,56 +86,94 @@ sync-package kit package:
             dep="kernel-5.15"
         elif [[ "${dep}" == "kernel-6_1" ]]; then
             dep="kernel-6.1"
-        elif [[ "${dep}" == "glibc" ]]; then
-            continue
+        elif [[ "${dep}" == "kernel-6_12" ]]; then
+            dep="kernel-6.12"
+        elif [[ "${dep}" == "kernel-6_18" ]]; then
+            dep="kernel-6.18"
         fi
-        cat <<-EOF >> "${element}/${pkg_name}.edo.bml"
-          "//kits/{{kit}}/${dep}",
+        cat <<-EOF >> "${element}/edo.toml"
+          "//packages/${dep}/rpm",
     EOF
     done
-    cat <<'EOF' >> "${element}/${pkg_name}.edo.bml"
-      ]
+    cat <<-EOF >> "${element}/edo.toml"
+    ]
+    EOF
+
+    if [ -n "${source_groups}" ]; then
+        cat <<-EOF >> "${element}/edo.toml"
+        vendored = [
+            "//kits/{{kit}}/cargo-vendor",
+    EOF
+
+        cat <<-EOF >> "${element}/edo.toml"
+        ]
+    EOF
+    fi
+
+    cat <<-EOF >> "${element}/edo.toml"
+    [transform.rpm.source]
+    sources = [
+        "//packages/${pkg_name}/src",
+    EOF
+    if [ -n "${source_groups}" ]; then
+        cat <<-EOF >> "${element}/edo.toml"
+        "//kits/{{kit}}/code",
+    EOF
+    fi
+    cat <<-EOF >> "${element}/edo.toml"
+    ]
+    archives = [
     EOF
     for item in $downloads; do
         filename="$(basename "${item}")"
-        ref=$(curl -sL "${item}" | b3sum | awk '{ print $1 }' )
-        cat <<-EOF >> "${element}/${pkg_name}.edo.bml"
-      source :remote "${filename}" {
-        url = "${item}"
-        ref = "${ref}"
-        out = "${filename}"
-      }
+        cat <<-EOF >> "${element}/edo.toml"
+          "//${element}/${filename}",
     EOF
     done
+    cat <<-EOF >> "${element}/edo.toml"
+    ]
+    EOF
     spec_file="${source}/{{package}}/${pkg_name}.spec"
-    go_found="$(cat "${spec_file}" | grep '1.22' || echo "")"
-    if [ -n "${go_found}" ]; then
-        cat <<EOF >> "${element}/${pkg_name}.edo.bml"
-        go-version = "1.22.1"
+    for item in $downloads; do
+        filename="$(basename "${item}")"
+        ref=$(curl -sL "${item}" | b3sum | awk '{ print $1 }' )
+        cat <<-EOF >> "${element}/edo.toml"
+      [source."${filename}"]
+      kind = "remote"
+      url  = "${item}"
+      ref  = "${ref}"
+      out  = "${filename}"
     EOF
-    fi
-    cat <<EOF >> "${element}/${pkg_name}.edo.bml"
-    }
-    EOF
+    done
+    # spec_file="${source}/{{package}}/${pkg_name}.spec"
+    # go_found="$(cat "${spec_file}" | grep '1.22' || echo "")"
+    # if [ -n "${go_found}" ]; then
+    #     cat <<EOF >> "${element}/${pkg_name}.edo.bml"
+    #     go-version = "1.22.1"
+    # EOF
+    # fi
+    # cat <<EOF >> "${element}/${pkg_name}.edo.bml"
+    # }
+    # EOF
 
 _sync-packages kit:
     #!/usr/bin/env bash
     element="kits/{{kit}}"
     source="repos/{{kit}}"
-    cat <<-EOF > "${element}/pkgs.edo.bml"
-    transform :compose "pkgs" {
-        depends = [
+    cat <<-EOF >> "${element}/edo.toml"
+    [transform.pkgs]
+    kind = "compose"
+    depends = [
     EOF
     packages="$(cat "${source}/Cargo.toml" | tq .workspace.members | jq --raw-output '.[] | select(. | match("packages/";"i"))')"
     IFS='\n' read -a package_list <<< "${packages}"
     for package in ${packages[@]}; do
         just sync-package {{kit}} "${package}"
         pkg_name="$(sed -e 's|packages/||g' <<< "${package}")"
-        echo "'//kits/{{kit}}/${pkg_name}'," >> "${element}/pkgs.edo.bml"
+        echo "'//packages/${pkg_name}/rpm'," >> "${element}/edo.toml"
     done
-    cat <<-EOF >> "${element}/pkgs.edo.bml"
+    cat <<-EOF >> "${element}/edo.toml"
         ]
-    }
     EOF
 
 sync kit:

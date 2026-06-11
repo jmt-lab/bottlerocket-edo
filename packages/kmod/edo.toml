@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/kmod"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "kmod"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libz/rpm",
+      "//packages/libzstd/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/kmod/src",
+]
+archives = [
+      "//packages/kmod/kmod-34.2.tar.xz",
+      "//packages/kmod/kmod-34.2.tar.sign",
+]
+  [source."kmod-34.2.tar.xz"]
+  kind = "remote"
+  url  = "https://www.kernel.org/pub/linux/utils/kernel/kmod/kmod-34.2.tar.xz"
+  ref  = "1ed540d5aea74cde8dfccf9d3737dfb0cd5c021bbafda77b6902ba07f5642312"
+  out  = "kmod-34.2.tar.xz"
+  [source."kmod-34.2.tar.sign"]
+  kind = "remote"
+  url  = "https://www.kernel.org/pub/linux/utils/kernel/kmod/kmod-34.2.tar.sign"
+  ref  = "9a3ae6a8334d61161f4a7dd82a09afee048bd3332a77e8ce450bb1c7e5e46d68"
+  out  = "kmod-34.2.tar.sign"

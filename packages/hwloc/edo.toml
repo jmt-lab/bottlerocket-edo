@@ -1,0 +1,25 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/hwloc"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "hwloc"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/systemd-252/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/hwloc/src",
+]
+archives = [
+      "//packages/hwloc/hwloc-2.13.0.tar.bz2",
+]
+  [source."hwloc-2.13.0.tar.bz2"]
+  kind = "remote"
+  url  = "https://download.open-mpi.org/release/hwloc/v2.13/hwloc-2.13.0.tar.bz2"
+  ref  = "83a9474fe08d959186f5f737baf2393ee25962bccb315b9d840f8a5d86773fb3"
+  out  = "hwloc-2.13.0.tar.bz2"

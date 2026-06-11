@@ -1,0 +1,35 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/nftables"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "nftables"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/iptables/rpm",
+      "//packages/libjansson/rpm",
+      "//packages/libmnl/rpm",
+      "//packages/libnftnl/rpm",
+      "//packages/readline/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/nftables/src",
+]
+archives = [
+      "//packages/nftables/nftables-1.1.6.tar.xz",
+      "//packages/nftables/nftables-1.1.6.tar.xz.sig",
+]
+  [source."nftables-1.1.6.tar.xz"]
+  kind = "remote"
+  url  = "https://www.netfilter.org/pub/nftables/nftables-1.1.6.tar.xz"
+  ref  = "fe01ac223a3e41331bfa686058a04cb2719c2ced1ed7bb7892df3e5026f9fc82"
+  out  = "nftables-1.1.6.tar.xz"
+  [source."nftables-1.1.6.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://www.netfilter.org/pub/nftables/nftables-1.1.6.tar.xz.sig"
+  ref  = "72bc283c8ddbfad0fa73aa463935026ebac89c962285b7bad61862cf2f386f59"
+  out  = "nftables-1.1.6.tar.xz.sig"

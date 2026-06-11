@@ -1,0 +1,24 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libisal"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libisal"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libisal/src",
+]
+archives = [
+      "//packages/libisal/isa-l-2.32.0.tar.gz",
+]
+  [source."isa-l-2.32.0.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/intel/isa-l/archive/v2.32.0/isa-l-2.32.0.tar.gz"
+  ref  = "b4ff6e585630c56161c3b13c38c3fc2b15ef4c13db5f3bce4be8c54367b0c9f3"
+  out  = "isa-l-2.32.0.tar.gz"

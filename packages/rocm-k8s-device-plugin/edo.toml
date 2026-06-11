@@ -1,0 +1,26 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/rocm-k8s-device-plugin"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "rocm-k8s-device-plugin"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/hwloc/rpm",
+      "//packages/libdrm/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/rocm-k8s-device-plugin/src",
+]
+archives = [
+      "//packages/rocm-k8s-device-plugin/v1.31.0.9.tar.gz",
+]
+  [source."v1.31.0.9.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/ROCm/k8s-device-plugin/archive/v1.31.0.9.tar.gz"
+  ref  = "f4086bf8c6a01b043e9973583c030a14d24a3dfa83812c403a65f54f47bbf124"
+  out  = "v1.31.0.9.tar.gz"

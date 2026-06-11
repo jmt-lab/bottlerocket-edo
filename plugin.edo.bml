@@ -1,7 +1,0 @@
-plugin :wasm "bplugin" {
-	source :local "plugin" {
-		path = "/home/fedora/edo/target/wasm32-wasip2/release/edo_bottlerocket_plugin.wasm"
-		out  = "."
-		is_archive = false
-	}
-}

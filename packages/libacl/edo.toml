@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libacl"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libacl"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libattr/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libacl/src",
+]
+archives = [
+      "//packages/libacl/acl-2.3.2.tar.gz",
+      "//packages/libacl/acl-2.3.2.tar.gz.sig",
+]
+  [source."acl-2.3.2.tar.gz"]
+  kind = "remote"
+  url  = "https://download-mirror.savannah.gnu.org/releases/acl/acl-2.3.2.tar.gz"
+  ref  = "dcdc2457033d689819cb4390e8a25cb75d7c078a58bb00393c8382df92115dbd"
+  out  = "acl-2.3.2.tar.gz"
+  [source."acl-2.3.2.tar.gz.sig"]
+  kind = "remote"
+  url  = "https://download-mirror.savannah.gnu.org/releases/acl/acl-2.3.2.tar.gz.sig"
+  ref  = "d5afe38f1f8ec2e7f65662cde9c409bb346f049ac9fec67cdc789ac3d9475180"
+  out  = "acl-2.3.2.tar.gz.sig"

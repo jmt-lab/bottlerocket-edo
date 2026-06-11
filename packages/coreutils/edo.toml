@@ -1,0 +1,35 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/coreutils"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "coreutils"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libacl/rpm",
+      "//packages/libattr/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libxcrypt/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/coreutils/src",
+]
+archives = [
+      "//packages/coreutils/coreutils-9.10.tar.xz",
+      "//packages/coreutils/coreutils-9.10.tar.xz.sig",
+]
+  [source."coreutils-9.10.tar.xz"]
+  kind = "remote"
+  url  = "https://ftp.gnu.org/gnu/coreutils/coreutils-9.10.tar.xz"
+  ref  = "542a4aa5597cb3ae7009640c65e13889a04e7e2b7571b59ea22fac3db7fa990f"
+  out  = "coreutils-9.10.tar.xz"
+  [source."coreutils-9.10.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://ftp.gnu.org/gnu/coreutils/coreutils-9.10.tar.xz.sig"
+  ref  = "a05db39c7d6a51e5770e3fd5e614f8fb1c4ea967b358695dc88c0f7592bd1743"
+  out  = "coreutils-9.10.tar.xz.sig"

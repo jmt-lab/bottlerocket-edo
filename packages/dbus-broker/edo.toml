@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/dbus-broker"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "dbus-broker"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/systemd-252/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/dbus-broker/src",
+]
+archives = [
+      "//packages/dbus-broker/dbus-broker-37.tar.xz",
+      "//packages/dbus-broker/dbus-broker-37.tar.xz.asc",
+]
+  [source."dbus-broker-37.tar.xz"]
+  kind = "remote"
+  url  = "https://github.com/bus1/dbus-broker/releases/download/v37/dbus-broker-37.tar.xz"
+  ref  = "afdd582e05442005d1544cce2c871e32c4088d3aa8a10abf7911476bc63c398a"
+  out  = "dbus-broker-37.tar.xz"
+  [source."dbus-broker-37.tar.xz.asc"]
+  kind = "remote"
+  url  = "https://github.com/bus1/dbus-broker/releases/download/v37/dbus-broker-37.tar.xz.asc"
+  ref  = "df4a13405e7663abb62789854a9f7159671cf1bf9a50f7b11101728ee5e37998"
+  out  = "dbus-broker-37.tar.xz.asc"

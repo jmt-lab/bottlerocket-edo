@@ -1,0 +1,25 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/rdma-core"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "rdma-core"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libnl/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/rdma-core/src",
+]
+archives = [
+      "//packages/rdma-core/rdma-core-60.1.tar.gz",
+]
+  [source."rdma-core-60.1.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/linux-rdma/rdma-core/releases/download/v60.1/rdma-core-60.1.tar.gz"
+  ref  = "15d01b3cccdb9c0464f18736b28a58aa9f06b890caa2605e29503f2e9b114bbc"
+  out  = "rdma-core-60.1.tar.gz"

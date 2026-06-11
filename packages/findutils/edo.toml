@@ -1,0 +1,31 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/findutils"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "findutils"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libselinux/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/findutils/src",
+]
+archives = [
+      "//packages/findutils/findutils-4.10.0.tar.xz",
+      "//packages/findutils/findutils-4.10.0.tar.xz.sig",
+]
+  [source."findutils-4.10.0.tar.xz"]
+  kind = "remote"
+  url  = "https://ftp.gnu.org/pub/gnu/findutils/findutils-4.10.0.tar.xz"
+  ref  = "e8cb4d84891ae4d58a877c0834527b7d0e3d1c76c0bd228834856a26d6cbfd5a"
+  out  = "findutils-4.10.0.tar.xz"
+  [source."findutils-4.10.0.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://ftp.gnu.org/pub/gnu/findutils/findutils-4.10.0.tar.xz.sig"
+  ref  = "a66b4f0fd74930a4c4dfe19ee03badff5dea4a0810840599fd2fd7e0826f24ad"
+  out  = "findutils-4.10.0.tar.xz.sig"

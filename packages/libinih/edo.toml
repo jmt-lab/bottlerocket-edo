@@ -1,0 +1,24 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libinih"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libinih"
+depends = [
+      "//packages/glibc/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libinih/src",
+]
+archives = [
+      "//packages/libinih/r62.tar.gz",
+]
+[source."r62.tar.gz"]
+kind = "remote"
+url  = "https://github.com/benhoyt/inih/archive/refs/tags/r62.tar.gz"
+ref  = "d3e654d280e40c816cf4497f2899ba707e610717e34acd06f9d5224cfdbb6c3f"
+out  = "inih-r62.tar.gz"

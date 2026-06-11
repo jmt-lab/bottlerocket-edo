@@ -1,0 +1,36 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/conntrack-tools"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "conntrack-tools"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libmnl/rpm",
+      "//packages/libnetfilter_conntrack/rpm",
+      "//packages/libnetfilter_cthelper/rpm",
+      "//packages/libnetfilter_cttimeout/rpm",
+      "//packages/libnetfilter_queue/rpm",
+      "//packages/libnfnetlink/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/conntrack-tools/src",
+]
+archives = [
+      "//packages/conntrack-tools/conntrack-tools-1.4.9.tar.xz",
+      "//packages/conntrack-tools/conntrack-tools-1.4.9.tar.xz.sig",
+]
+  [source."conntrack-tools-1.4.9.tar.xz"]
+  kind = "remote"
+  url  = "https://www.netfilter.org/projects/conntrack-tools/files/conntrack-tools-1.4.9.tar.xz"
+  ref  = "68327db499452bb293bfc1f2f2e94bc91c32fc0a4195d806d06cb7e4097d8fe7"
+  out  = "conntrack-tools-1.4.9.tar.xz"
+  [source."conntrack-tools-1.4.9.tar.xz.sig"]
+  kind = "remote"
+  url  = "https://www.netfilter.org/projects/conntrack-tools/files/conntrack-tools-1.4.9.tar.xz.sig"
+  ref  = "355f6104e457b2eef729e6f3a0ce6a402b7926a7b8338a560d7246bb8001db7d"
+  out  = "conntrack-tools-1.4.9.tar.xz.sig"

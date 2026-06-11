@@ -1,0 +1,27 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/open-vm-tools"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "open-vm-tools"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libglib/rpm",
+      "//packages/libtirpc/rpm",
+      "//packages/libxcrypt/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/open-vm-tools/src",
+]
+archives = [
+      "//packages/open-vm-tools/open-vm-tools-13.0.10-25056151.tar.gz",
+]
+  [source."open-vm-tools-13.0.10-25056151.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/vmware/open-vm-tools/releases/download/stable-13.0.10/open-vm-tools-13.0.10-25056151.tar.gz"
+  ref  = "c9e766c87f71435a1f4d3212b15bfb94d8addb184f0e2e7bd50491863ff7126e"
+  out  = "open-vm-tools-13.0.10-25056151.tar.gz"

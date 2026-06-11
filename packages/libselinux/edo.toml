@@ -1,0 +1,32 @@
+schema-version = "1"
+[source.src]
+kind    = "local"
+path    = "repos/bottlerocket-core-kit/packages/libselinux"
+out     = "."
+[transform.rpm]
+kind    = "rpm"
+environment =  "//kits/bottlerocket-core-kit/sdk"
+package = "libselinux"
+depends = [
+      "//packages/glibc/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libsepol/rpm",
+]
+[transform.rpm.source]
+sources = [
+    "//packages/libselinux/src",
+]
+archives = [
+      "//packages/libselinux/libselinux-3.8.1.tar.gz",
+      "//packages/libselinux/libselinux-3.8.1.tar.gz.asc",
+]
+  [source."libselinux-3.8.1.tar.gz"]
+  kind = "remote"
+  url  = "https://github.com/SELinuxProject/selinux/releases/download/3.8.1/libselinux-3.8.1.tar.gz"
+  ref  = "88f8b413def89327a59b51fe0b94ad982aa142fb1715fc0caa9e27013c1e6ed9"
+  out  = "libselinux-3.8.1.tar.gz"
+  [source."libselinux-3.8.1.tar.gz.asc"]
+  kind = "remote"
+  url  = "https://github.com/SELinuxProject/selinux/releases/download/3.8.1/libselinux-3.8.1.tar.gz.asc"
+  ref  = "da6cb95c2919caedec0682cb329d98502465f4e0d0365f1f0bff2642522f6bec"
+  out  = "libselinux-3.8.1.tar.gz.asc"
