@@ -1,0 +1,30 @@
+[package]
+name = "twoliter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+astral-tokio-tar = "0.6"
+async-compression = "0.4"
+async-trait = "0.1"
+base16 = "0.2"
+blake3 = "1.8"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+edo = { path = "../edo/crates/edo" }
+edo-core = { path = "../edo/crates/core" }
+indexmap = "2.14"
+nutype = { version = "0.5", features = ["regex", "serde"] }
+ocilot = "0.1.0"
+regex = "1"
+rpm = { version = "0.18", default-features = false }
+semver = "1.0"
+serde = { version = "1", features = ["derive"] }
+snafu = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+toml = "0.9"
+tracing = "0.1"
+
+[dev-dependencies]
+test-case = "3"
