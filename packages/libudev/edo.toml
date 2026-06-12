@@ -1,0 +1,39 @@
+schema-version = "1"
+
+[source.src]
+kind = "local"
+path = "repos/bottlerocket-core-kit/packages/libudev"
+out  = "."
+
+[transform.rpm]
+kind = "rpm"
+environment = "//kits/bottlerocket-core-kit/sdk"
+package = "libudev"
+depends = [
+    "//packages/glibc/rpm",
+    "//packages/kmod/rpm",
+    "//packages/libacl/rpm",
+    "//packages/libattr/rpm",
+    "//packages/libcap/rpm",
+    "//packages/libseccomp/rpm",
+    "//packages/libselinux/rpm",
+    "//packages/libxcrypt/rpm",
+    "//packages/util-linux/rpm",
+    "//packages/libz/rpm",
+    "//packages/libzstd/rpm",
+    "//packages/libpcre/rpm",
+    "//packages/libsepol/rpm"
+]
+[transform.rpm.source]
+sources = [
+    "src"
+]
+archives = [
+    "systemd-stable-252.39.tar.gz"
+]
+
+[source."systemd-stable-252.39.tar.gz"]
+kind = "remote"
+url  = "https://github.com/systemd/systemd-stable/archive/v252.39/systemd-stable-252.39.tar.gz"
+ref  = "11e60c6b0376f6bd42078732fdcec990a7f705295276ec63c338fad01616ee41"
+out  = "systemd-stable-252.39.tar.gz"

@@ -1,0 +1,28 @@
+schema-version = "1"
+
+[source.src]
+kind = "local"
+path = "repos/bottlerocket-core-kit/packages/libjson-c"
+out  = "."
+
+[transform.rpm]
+kind = "rpm"
+environment = "//kits/bottlerocket-core-kit/sdk"
+package = "libjson-c"
+depends = [
+    "//packages/glibc/rpm"
+]
+
+[transform.rpm.source]
+sources = [
+    "//packages/libjson-c/src"
+]
+archives = [
+    "//packages/libjson-c/json-c-0.18-20240915.tar.gz"
+]
+
+[source."json-c-0.18-20240915.tar.gz"]
+kind = "remote"
+url  = "https://github.com/json-c/json-c/archive/refs/tags/json-c-0.18-20240915.tar.gz"
+ref  = "69e553b048bc4a3f32ad10ff6372a35a8e599142d7634651baa9490461c7beb3"
+out  = "json-c-0.18-20240915.tar.gz"

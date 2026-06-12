@@ -13,6 +13,8 @@ depends = [
       "//packages/libz/rpm",
       "//packages/libzstd/rpm",
       "//packages/util-linux/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libsepol/rpm"
 ]
 [transform.rpm.source]
 sources = [

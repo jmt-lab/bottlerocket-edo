@@ -10,6 +10,7 @@ package = "nvme-cli"
 depends = [
       "//packages/glibc/rpm",
       "//packages/libnvme/rpm",
+      "//packages/libjson-c/rpm",
 ]
 [transform.rpm.source]
 sources = [

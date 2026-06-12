@@ -11,6 +11,10 @@ depends = [
       "//packages/glibc/rpm",
       "//packages/libz/rpm",
 ]
+bundled = {
+    "//packages/soci-snapshotter/bundled" = "bundled-soci-snapshotter-0.13.0.tar.gz",
+    "//packages/soci-snapshotter/bundled2" = "bundled-cmd.tar.gz"
+}
 [transform.rpm.source]
 sources = [
     "//packages/soci-snapshotter/src",
@@ -24,3 +28,13 @@ kind = "remote"
 url  = "https://github.com/awslabs/soci-snapshotter/archive/v0.13.0/soci-snapshotter-0.13.0.tar.gz"
 ref  = "f44e775872c4c87e3847ce46370d975627329092cb4e96e27319ca6c984d63f2"
 out  = "soci-snapshotter-0.13.0.tar.gz"
+[transform.bundled]
+kind = "go-vendor"
+environment = "//kits/bottlerocket-core-kit/sdk-open"
+source = "soci-snapshotter-0.13.0.tar.gz"
+modules = ["soci-snapshotter-0.13.0"]
+[transform.bundled2]
+kind = "go-vendor"
+environment = "//kits/bottlerocket-core-kit/sdk-open"
+source = "soci-snapshotter-0.13.0.tar.gz"
+modules = ["soci-snapshotter-0.13.0/cmd"]

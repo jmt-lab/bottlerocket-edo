@@ -10,6 +10,9 @@ package = "aws-iam-authenticator"
 depends = [
       "//packages/glibc/rpm",
 ]
+bundled = {
+    "//packages/aws-iam-authenticator/bundled" = "bundled-aws-iam-authenticator-0.7.11.tar.gz"
+}
 [transform.rpm.source]
 sources = [
     "//packages/aws-iam-authenticator/src",
@@ -22,3 +25,8 @@ archives = [
   url  = "https://github.com/kubernetes-sigs/aws-iam-authenticator/archive/v0.7.11/aws-iam-authenticator-0.7.11.tar.gz"
   ref  = "6e8cdbf765b66b9d7ee054c7381aee5cd462dd1a092d9b712837e52e731de3de"
   out  = "aws-iam-authenticator-0.7.11.tar.gz"
+[transform.bundled]
+kind = "go-vendor"
+environment = "//kits/bottlerocket-core-kit/sdk-open"
+source = "aws-iam-authenticator-0.7.11.tar.gz"
+modules = ["aws-iam-authenticator-0.7.11"]

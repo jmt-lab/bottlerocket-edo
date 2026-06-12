@@ -13,6 +13,9 @@ depends = [
       "//packages/libncurses/rpm",
       "//packages/libselinux/rpm",
       "//packages/libxcrypt/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libsepol/rpm",
+      "//packages/libattr/rpm"
 ]
 [transform.rpm.source]
 sources = [

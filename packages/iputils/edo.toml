@@ -10,6 +10,7 @@ package = "iputils"
 depends = [
       "//packages/glibc/rpm",
       "//packages/libcap/rpm",
+      "//packages/libattr/rpm"
 ]
 [transform.rpm.source]
 sources = [

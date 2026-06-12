@@ -12,7 +12,7 @@ cargo-tomls = { "code" = ["sources/Cargo.toml"] }
 [transform.go-vendor]
 kind = "go-vendor"
 source = "code"
-modules = [ "sources/host-ctr" ]
+modules = [ "sources/host-ctr", "sources/ecs-gpu-init" ]
 [vendor.bottlerocket-core-kit]
 kind = "image"
 uri  = "public.ecr.aws/bottlerocket"
@@ -37,6 +37,8 @@ network = true
 [transform.pkgs]
 kind = "compose"
 depends = [
+'//packages/libjson-c/rpm',
+'//packages/libudev/rpm',
 '//packages/amazon-ecs-cni-plugins/rpm',
 '//packages/amazon-ssm-agent/rpm',
 '//packages/amazon-vpc-cni-plugins/rpm',

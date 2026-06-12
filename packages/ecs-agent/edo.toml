@@ -17,8 +17,8 @@ sources = [
 archives = [
       "//packages/ecs-agent/amazon-ecs-agent-1.103.2.tar.gz",
 ]
-  [source."amazon-ecs-agent-1.103.2.tar.gz"]
-  kind = "remote"
-  url  = "https://github.com/aws/amazon-ecs-agent/archive/v1.103.2/amazon-ecs-agent-1.103.2.tar.gz"
-  ref  = "d6e75ca3afb92933ce4dde175596789552c0e84e8f7453895d65dad263274b0a"
-  out  = "amazon-ecs-agent-1.103.2.tar.gz"
+[source."amazon-ecs-agent-1.103.2.tar.gz"]
+kind = "remote"
+url  = "https://github.com/aws/amazon-ecs-agent/archive/v1.103.2/amazon-ecs-agent-1.103.2.tar.gz"
+ref  = "d6e75ca3afb92933ce4dde175596789552c0e84e8f7453895d65dad263274b0a"
+out  = "amazon-ecs-agent-1.103.2.tar.gz"

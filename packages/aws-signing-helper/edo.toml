@@ -10,6 +10,9 @@ package = "aws-signing-helper"
 depends = [
       "//packages/glibc/rpm",
 ]
+bundled = {
+    "//packages/aws-signing-helper/bundled" = "bundled-rolesanywhere-credential-helper-v1.8.0.tar.gz"
+}
 [transform.rpm.source]
 sources = [
     "//packages/aws-signing-helper/src",
@@ -17,8 +20,13 @@ sources = [
 archives = [
       "//packages/aws-signing-helper/rolesanywhere-credential-helper-v1.8.0.tar.gz",
 ]
-  [source."rolesanywhere-credential-helper-v1.8.0.tar.gz"]
-  kind = "remote"
-  url  = "https://github.com/aws/rolesanywhere-credential-helper/archive/v1.8.0/rolesanywhere-credential-helper-v1.8.0.tar.gz"
-  ref  = "e3edb5b18f64be73802724fd66e6b62ed4c90f35e464d81a543d1c605378f5cd"
-  out  = "rolesanywhere-credential-helper-v1.8.0.tar.gz"
+[source."rolesanywhere-credential-helper-v1.8.0.tar.gz"]
+kind = "remote"
+url  = "https://github.com/aws/rolesanywhere-credential-helper/archive/v1.8.0/rolesanywhere-credential-helper-v1.8.0.tar.gz"
+ref  = "e3edb5b18f64be73802724fd66e6b62ed4c90f35e464d81a543d1c605378f5cd"
+out  = "rolesanywhere-credential-helper-v1.8.0.tar.gz"
+[transform.bundled]
+kind = "go-vendor"
+environment = "//kits/bottlerocket-core-kit/sdk-open"
+source = "//packages/aws-signing-helper/rolesanywhere-credential-helper-v1.8.0.tar.gz"
+modules = ["rolesanywhere-credential-helper-1.8.0"]

@@ -12,6 +12,7 @@ depends = [
       "//packages/libaudit/rpm",
       "//packages/libselinux/rpm",
       "//packages/libsepol/rpm",
+      "//packages/libpcre/rpm"
 ]
 [transform.rpm.source]
 sources = [

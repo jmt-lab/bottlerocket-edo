@@ -12,6 +12,11 @@ depends = [
       "//packages/libaio/rpm",
       "//packages/libselinux/rpm",
       "//packages/util-linux/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libsepol/rpm",
+      "//packages/libudev/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libattr/rpm"
 ]
 [transform.rpm.source]
 sources = [

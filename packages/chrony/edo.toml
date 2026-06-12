@@ -13,6 +13,7 @@ depends = [
       "//packages/libncurses/rpm",
       "//packages/libseccomp/rpm",
       "//packages/readline/rpm",
+      "//packages/libattr/rpm"
 ]
 [transform.rpm.source]
 sources = [

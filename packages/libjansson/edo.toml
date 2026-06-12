@@ -21,4 +21,4 @@ archives = [
   kind = "remote"
   url  = "https://github.com/akheron/jansson/archive/v2.14.1.tar.gz"
   ref  = "4dca04aa569717837eb07eeb996f30a99301d11e6124a59b01f7d0c44d8a3b9b"
-  out  = "v2.14.1.tar.gz"
+  out  = "jansson-2.14.1.tar.gz"

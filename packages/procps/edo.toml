@@ -10,6 +10,8 @@ package = "procps"
 depends = [
       "//packages/glibc/rpm",
       "//packages/libselinux/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libsepol/rpm"
 ]
 [transform.rpm.source]
 sources = [

@@ -14,6 +14,9 @@ depends = [
       "//packages/libmnl/rpm",
       "//packages/libnftnl/rpm",
       "//packages/readline/rpm",
+      "//packages/libncurses/rpm",
+      "//packages/libnetfilter_conntrack/rpm",
+      "//packages/libnfnetlink/rpm"
 ]
 [transform.rpm.source]
 sources = [

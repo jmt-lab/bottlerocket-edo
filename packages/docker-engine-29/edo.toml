@@ -12,6 +12,30 @@ depends = [
       "//packages/libseccomp/rpm",
       "//packages/nftables/rpm",
       "//packages/systemd-252/rpm",
+      "//packages/kmod/rpm",
+      "//packages/libacl/rpm",
+      "//packages/libattr/rpm",
+      "//packages/libcap/rpm",
+      "//packages/libcrypto/rpm",
+      "//packages/libcryptsetup/rpm",
+      "//packages/util-linux/rpm",
+      "//packages/libselinux/rpm",
+      "//packages/libtss2/rpm",
+      "//packages/libxcrypt/rpm",
+      "//packages/iptables/rpm",
+      "//packages/libjansson/rpm",
+      "//packages/libmnl/rpm",
+      "//packages/libnftnl/rpm",
+      "//packages/readline/rpm",
+      "//packages/libncurses/rpm",
+      "//packages/libpcre/rpm",
+      "//packages/libnetfilter_conntrack/rpm",
+      "//packages/libnfnetlink/rpm",
+      "//packages/libdevmapper/rpm",
+      "//packages/libjson-c/rpm",
+      "//packages/libz/rpm",
+      "//packages/libzstd/rpm",
+      "//packages/libaio/rpm"
 ]
 [transform.rpm.source]
 sources = [
@@ -21,13 +45,13 @@ archives = [
       "//packages/docker-engine-29/moby-docker-v29.0.4.tar.gz",
       "//packages/docker-engine-29/0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch",
 ]
-  [source."moby-docker-v29.0.4.tar.gz"]
-  kind = "remote"
-  url  = "https://github.com/moby/moby/archive/docker-v29.0.4/moby-docker-v29.0.4.tar.gz"
-  ref  = "6c6bccdde897e6478e97ef958423cf6f3c63183eb94ad902ae4607a7152cbbae"
-  out  = "moby-docker-v29.0.4.tar.gz"
-  [source."0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"]
-  kind = "remote"
-  url  = "https://cache.bottlerocket.aws/0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch/357030a55a200e76709ded37584419cd035f0f810248c654f2c618467411b28afac5408a600631b429f32e565532e4ebf46f334c6dea09158c84d1366f310be0/0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"
-  ref  = "7081dbca0161bdf143aca1f7e5a5b44217af64351e7d2617c5505a2fe9645187"
-  out  = "0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"
+[source."moby-docker-v29.0.4.tar.gz"]
+kind = "remote"
+url  = "https://github.com/moby/moby/archive/docker-v29.0.4/moby-docker-v29.0.4.tar.gz"
+ref  = "6c6bccdde897e6478e97ef958423cf6f3c63183eb94ad902ae4607a7152cbbae"
+out  = "moby-docker-v29.0.4.tar.gz"
+[source."0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"]
+kind = "remote"
+url  = "https://cache.bottlerocket.aws/0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch/357030a55a200e76709ded37584419cd035f0f810248c654f2c618467411b28afac5408a600631b429f32e565532e4ebf46f334c6dea09158c84d1366f310be0/0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"
+ref  = "7081dbca0161bdf143aca1f7e5a5b44217af64351e7d2617c5505a2fe9645187"
+out  = "0003-Switch-containerd-image-backend-s-image-pull-to-tran.patch"

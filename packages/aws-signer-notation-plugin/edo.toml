@@ -10,6 +10,9 @@ package = "aws-signer-notation-plugin"
 depends = [
       "//packages/glibc/rpm",
 ]
+bundled = {
+    "//packages/aws-signer-notation-plugin/bundled" = "bundled-aws-signer-notation-plugin-v1.0.2292.tar.gz"
+}
 [transform.rpm.source]
 sources = [
     "//packages/aws-signer-notation-plugin/src",
@@ -17,8 +20,13 @@ sources = [
 archives = [
       "//packages/aws-signer-notation-plugin/aws-signer-notation-plugin-v1.0.2292.tar.gz",
 ]
-  [source."aws-signer-notation-plugin-v1.0.2292.tar.gz"]
-  kind = "remote"
-  url  = "https://github.com/aws/aws-signer-notation-plugin/archive/v1.0.2292/aws-signer-notation-plugin-v1.0.2292.tar.gz"
-  ref  = "f88f7f07ebccd042b571dd07282c2f1222b28913faa75484d102591cc49656e9"
-  out  = "aws-signer-notation-plugin-v1.0.2292.tar.gz"
+[source."aws-signer-notation-plugin-v1.0.2292.tar.gz"]
+kind = "remote"
+url  = "https://github.com/aws/aws-signer-notation-plugin/archive/v1.0.2292/aws-signer-notation-plugin-v1.0.2292.tar.gz"
+ref  = "f88f7f07ebccd042b571dd07282c2f1222b28913faa75484d102591cc49656e9"
+out  = "aws-signer-notation-plugin-v1.0.2292.tar.gz"
+[transform.bundled]
+kind = "go-vendor"
+environment = "//kits/bottlerocket-core-kit/sdk-open"
+source = "aws-signer-notation-plugin-v1.0.2292.tar.gz"
+modules = ["aws-signer-notation-plugin-1.0.2292"]
