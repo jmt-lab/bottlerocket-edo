@@ -1,12 +1,16 @@
 use clap::Parser;
 use cmd::{Checkout, List, Prune, Run, Update};
-use std::path::PathBuf;
+use edo::console::ConsoleMode;
+use std::{path::PathBuf, str::FromStr};
+
+use crate::cmd::{Build, Publish};
 
 mod cmd;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
 pub mod error {
+    use edo::context::Addr;
     use snafu::Snafu;
 
     #[derive(Snafu, Debug)]
@@ -27,6 +31,14 @@ pub mod error {
             source: edo::environment::EnvironmentError,
         },
         #[snafu(transparent)]
+        Oci {
+            source: ocilot::error::Error,
+        },
+        #[snafu(display("no kit located at address {addr}"))]
+        NoKit {
+            addr: Addr
+        },
+        #[snafu(transparent)]
         Source {
             source: edo::source::SourceError,
         },
@@ -38,7 +50,18 @@ pub mod error {
         Core {
             source: edo_core::error::Error,
         },
+        #[snafu(transparent)]
+        Twoliter {
+            source: twoliter::config::error::Error,
+        }
     }
+}
+
+/// Parse `--console-mode` from a CLI string.
+fn parse_console_mode(s: &str) -> std::result::Result<ConsoleMode, String> {
+    ConsoleMode::from_str(s).map_err(|v| {
+        format!("unknown console mode '{v}' (expected one of auto, full, simple, none)")
+    })
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -52,15 +75,50 @@ pub struct Args {
     config: Option<PathBuf>,
     #[arg(short, long)]
     storage: Option<PathBuf>,
+    /// How the build console renders progress.
+    ///
+    /// - `auto`: full canvas on TTY, simple stream otherwise (default).
+    /// - `full`: inline ratatui canvas at the bottom of the terminal.
+    /// - `simple`: one line per build event to stderr; CI-friendly.
+    /// - `none`: silent — only the rolling `.edo/logs/edo.jsonl` is written.
+    #[arg(long, default_value = "auto", value_parser = parse_console_mode)]
+    console_mode: ConsoleMode,
+    /// Path to the JSONL build-event log; pass `none` to disable.
+    /// Defaults to `<storage>/events.jsonl`.
+    #[arg(long, default_value = "default")]
+    event_log: String,
     #[clap(subcommand)]
     command: Commands,
 }
 
+
+impl Args {
+    /// Resolve the user-supplied `--event-log` argument to an absolute
+    /// path (or `None` if disabled).
+    pub fn resolve_event_log(&self) -> Option<PathBuf> {
+        if self.event_log.eq_ignore_ascii_case("none") {
+            return None;
+        }
+        if self.event_log != "default" {
+            return Some(PathBuf::from(&self.event_log));
+        }
+        // Default: <storage>/events.jsonl. When `--storage` is not set,
+        // fall back to ./.edo/events.jsonl.
+        let base = self
+            .storage
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(".edo"));
+        Some(base.join("events.jsonl"))
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 enum Commands {
+    Build(Build),
     Checkout(Checkout),
     Run(Run),
     Prune(Prune),
+    Publish(Publish),
     Update(Update),
     List(List),
 }
@@ -71,11 +129,13 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.clone().command {
+        Commands::Build(cmd) => cmd.run(args.clone()).await?,
         Commands::Checkout(cmd) => cmd.run(args.clone()).await?,
         Commands::Run(cmd) => cmd.run(args.clone()).await?,
         Commands::Prune(cmd) => cmd.run(args.clone()).await?,
         Commands::Update(cmd) => cmd.run(args.clone()).await?,
         Commands::List(cmd) => cmd.run(args.clone()).await?,
+        Commands::Publish(cmd) => cmd.run(args.clone()).await?
     }
     Ok(())
 }

@@ -1,0 +1,5 @@
+schema-version = "3"
+
+[project]
+registry = "public.ecr.aws/bottlerocket"
+sdk      = "=0.76.0"

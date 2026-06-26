@@ -1,20 +1,22 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
-use std::{path::Path};
 
 use async_trait::async_trait;
-use blake3::Hasher;
 use edo::storage::LayerOptions;
 use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
     source::Source,
     storage::{Artifact, ArtifactStageOptions, Compression, Config, Id, MediaType},
-    transform::{TransformError, TransformImpl, TransformResult, TransformStatus}, util::Reader,
+    transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
+    util::Reader,
 };
 use ocilot::models::Platform;
+use sha2::Digest;
+use sha2::Sha256;
 use snafu::OptionExt;
-use tracing::{trace};
+use tracing::trace;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct PackageBuildOptions {
@@ -42,8 +44,20 @@ impl FromElement for PackageBuildTransform {
     type Error = error::Error;
 
     async fn new(element: &Element, ctx: &Context) -> Result<Self, error::Error> {
-        let options: PackageBuildOptions = element.get()?;
-        let scope_table = element.source.as_ref().and_then(|x| x.get_resolved()).cloned().unwrap_or_default();
+        let mut options: PackageBuildOptions = element.get()?;
+        options.arch = Some(
+            ctx.args()
+                .get("arch")
+                .cloned()
+                .or(options.arch)
+                .unwrap_or(std::env::consts::ARCH.to_string()),
+        );
+        let scope_table = element
+            .source
+            .as_ref()
+            .and_then(|x| x.get_resolved())
+            .cloned()
+            .unwrap_or_default();
         let mut kits = Vec::new();
         let mut archives = Vec::new();
         let mut sources = Vec::new();
@@ -64,11 +78,14 @@ impl FromElement for PackageBuildTransform {
         }
         Ok(Self {
             addr: element.addr.clone(),
-            sdk: element.environment.clone().unwrap_or(Addr::parse("//default")?),
+            sdk: element
+                .environment
+                .clone()
+                .unwrap_or(Addr::parse("//default")?),
             options,
             kits,
             archives,
-            sources
+            sources,
         })
     }
 }
@@ -81,7 +98,7 @@ impl TransformImpl for PackageBuildTransform {
 
     /// Computes a unique content-address ID for this package build.
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
-        let mut hash = Hasher::new();
+        let mut hash = Sha256::new();
 
         // (a) Dependency artifact IDs, sorted by addr for determinism
         let mut depends = self.options.depends.clone();
@@ -112,12 +129,17 @@ impl TransformImpl for PackageBuildTransform {
             hash.update(depend_id.digest().as_bytes());
         }
         // (c) Kit Sources -> Archives -> Sources
-        for source in self.kits.iter().chain(self.archives.iter()).chain(self.sources.iter()) {
+        for source in self
+            .kits
+            .iter()
+            .chain(self.archives.iter())
+            .chain(self.sources.iter())
+        {
             let id = source.get_unique_id().await?;
             hash.update(id.digest().as_bytes());
         }
         let hash_bytes = hash.finalize();
-        let digest = hash_bytes.to_hex();
+        let digest = base16::encode_lower(hash_bytes.as_slice());
         let id = Id::builder()
             .name(self.addr.to_id())
             .digest(digest.to_lowercase())
@@ -140,10 +162,33 @@ impl TransformImpl for PackageBuildTransform {
 
     async fn prepare(&self, log: &Log, ctx: &Handle) -> TransformResult<()> {
         // Fetch all our sources
-        for source in self.kits.iter().chain(self.archives.iter()).chain(self.sources.iter()) {
+        for source in self
+            .kits
+            .iter()
+            .chain(self.archives.iter())
+            .chain(self.sources.iter())
+        {
             source.cache(log, ctx.storage()).await?;
         }
         Ok(())
+    }
+
+    async fn needs_prepare(&self, ctx: &Handle) -> TransformResult<bool> {
+        for source in self
+            .kits
+            .iter()
+            .chain(self.archives.iter())
+            .chain(self.sources.iter())
+        {
+            if !ctx
+                .storage()
+                .has_local(&source.get_unique_id().await?)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn stage(&self, _log: &Log, ctx: &Handle, env: &Environment) -> TransformResult<()> {
@@ -162,46 +207,58 @@ impl TransformImpl for PackageBuildTransform {
                 .context(error::DependSnafu { addr: dep.clone() })?;
             let id = t.get_unique_id(ctx).await?;
             trace!(component = "transform", type = "rpm", "staging dependency {dep} with id {id}");
-            env.stage(ctx, ArtifactStageOptions::builder()
-                .id(id)
-                .path(rpm_root)
-                .build()
-            ).await?;
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(rpm_root)
+                    .build(),
+            )
+            .await?;
         }
 
         // Stage all kits into the deps rpm root
         for source in self.kits.iter() {
             let id = source.get_unique_id().await?;
             trace!(component = "transform", type = "kit", "staging source {id}");
-            env.stage(ctx, ArtifactStageOptions::builder()
-                .id(id)
-                .path(rpm_root)
-                .build()
-            ).await?;
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(rpm_root)
+                    .build(),
+            )
+            .await?;
         }
 
         // Archives are going to be third party source tarballs that are not extracted
         for source in self.archives.iter() {
             let id = source.get_unique_id().await?;
             trace!(component = "transform", type = "rpm", "staging source {id}");
-            env.stage(ctx, ArtifactStageOptions::builder()
-                .id(id)
-                .path(build_root)
-                .extract(false)
-                .decompress(false)
-                .build()
-            ).await?;
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(build_root)
+                    .extract(false)
+                    .decompress(false)
+                    .build(),
+            )
+            .await?;
         }
 
         // Sources are going to be first party sources
         for source in self.sources.iter() {
             let id = source.get_unique_id().await?;
             trace!(component = "transform", type = "rpm", "staging source {id}");
-            env.stage(ctx, ArtifactStageOptions::builder()
-                .id(id)
-                .path(build_root)
-                .build()
-            ).await?;
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(build_root)
+                    .build(),
+            )
+            .await?;
         }
 
         // Stage all vendored dependencies in build_root
@@ -211,22 +268,28 @@ impl TransformImpl for PackageBuildTransform {
                 .context(error::DependSnafu { addr: dep.clone() })?;
             let id = t.get_unique_id(ctx).await?;
             trace!(component = "transform", type = "rpm", "staging vendored dependency {dep} with id {id}");
-            env.stage(ctx, ArtifactStageOptions::builder()
-                .id(id)
-                .path(build_root)
-                .build()
-            ).await?;
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(build_root)
+                    .build(),
+            )
+            .await?;
         }
 
         // Stage all bundled source depends as archives
         for (addr, target_file) in self.options.bundled.iter() {
-            let t = ctx.get(addr).context(error::DependSnafu { addr: addr.clone() })?;
+            let t = ctx
+                .get(addr)
+                .context(error::DependSnafu { addr: addr.clone() })?;
             let id = t.get_unique_id(ctx).await?;
             trace!(component = "transform", type = "rpm", "staging bundled dependencies {addr} with id {id}");
             let artifact = ctx.storage().safe_open(&id).await?;
             if let Some(layer) = artifact.layers().first() {
                 let reader = ctx.storage().safe_read(layer).await?;
-                let (_, compression) = Compression::detect(&target_file.to_string_lossy().as_ref())?;
+                let (_, compression) =
+                    Compression::detect(&target_file.to_string_lossy().as_ref())?;
                 let layer_compression = layer.media_type().compression();
                 let reader = if layer_compression == compression {
                     // If the compression matches we can just use the reader verbatim
@@ -242,7 +305,8 @@ impl TransformImpl for PackageBuildTransform {
                     let decompress = Reader::with_decompression(reader, &layer_compression);
                     Reader::with_compression(decompress, &compression)
                 };
-                env.write_stream(&build_root.join(target_file), reader).await?;
+                env.write_stream(&build_root.join(target_file), reader)
+                    .await?;
             }
         }
 
@@ -320,11 +384,16 @@ impl TransformImpl for PackageBuildTransform {
             // Step 6: Copy all dependency rpms
             if vfs.try_exists(&format!("deps/Packages")).await? {
                 let pkg_dir = vfs.entry("deps/Packages").await;
-                vfs.command("copy-deps", "cp", &[
-                    "-r",
-                    &format!("{:?}/*/*{architecture}.rpm", pkg_dir.path()),
-                    rpms.as_ref()
-                ]).await?;
+                vfs.command(
+                    "copy-deps",
+                    "cp",
+                    &[
+                        "-r",
+                        &format!("{:?}/*/*{architecture}.rpm", pkg_dir.path()),
+                        rpms.as_ref(),
+                    ],
+                )
+                .await?;
             }
 
             // Step 7: Create local repo index over the rpm-root dependencies
@@ -370,14 +439,12 @@ impl TransformImpl for PackageBuildTransform {
                     .get("build-timestamp")
                     .and_then(|x| x.as_str())
                     .unwrap_or("1000000000");
-                let version = if let Some(version) = table
-                    .get("release-version")
-                    .and_then(|x| x.as_str())
-                {
-                    version
-                } else {
-                    "0.0.0"
-                };
+                let version =
+                    if let Some(version) = table.get("release-version").and_then(|x| x.as_str()) {
+                        version
+                    } else {
+                        "0.0.0"
+                    };
                 format!(".{timestamp}.{version}.br1")
             } else {
                 ".0000000000.0.0.0.br1".to_string()
@@ -418,10 +485,7 @@ impl TransformImpl for PackageBuildTransform {
                 "cp",
                 &[
                     "-r",
-                    &format!(
-                        "{:?}/{architecture}/*.rpm",
-                        rpms.path(),
-                    ),
+                    &format!("{:?}/{architecture}/*.rpm", rpms.path(),),
                     target.as_ref(),
                 ],
             )
@@ -434,7 +498,8 @@ impl TransformImpl for PackageBuildTransform {
                 .build();
 
             let writer = ctx.storage().safe_start_layer().await?;
-            env.read_stream(Path::new("install-root"), writer.clone()).await?;
+            env.read_stream(Path::new("install-root"), writer.clone())
+                .await?;
 
             artifact.layers_mut().push(
                 ctx.storage()
@@ -442,12 +507,13 @@ impl TransformImpl for PackageBuildTransform {
                         &writer,
                         &LayerOptions::builder()
                             .media_type(MediaType::Tar(Compression::None))
-                            .platform(Platform::builder()
-                                .os(std::env::consts::OS)
-                                .architecture(architecture)
-                                .build()
+                            .platform(
+                                Platform::builder()
+                                    .os(std::env::consts::OS)
+                                    .architecture(architecture)
+                                    .build(),
                             )
-                            .build()
+                            .build(),
                     )
                     .await?,
             );

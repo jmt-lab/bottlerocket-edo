@@ -8,18 +8,21 @@ astral-tokio-tar = "0.6"
 async-compression = "0.4"
 async-trait = "0.1"
 base16 = "0.2"
-blake3 = "1.8"
+base64 = "0.22.1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-edo = { path = "../edo/crates/edo" }
-edo-core = { path = "../edo/crates/core" }
+edo = { git = "https://github.com/awslabs/edo", branch = "develop" }
+edo-core = { git = "https://github.com/awslabs/edo", branch = "develop" }
 indexmap = "2.14"
+jiff = { version = "0.2", features = ["serde"] }
 nutype = { version = "0.5", features = ["regex", "serde"] }
-ocilot = "0.1.0"
+ocilot = "0.2"
 regex = "1"
 rpm = { version = "0.18", default-features = false }
 semver = "1.0"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
 snafu = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
