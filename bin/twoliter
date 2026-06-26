@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+if [ ! -e twoliter/target/release/twoliter ]; then
+    echo "twoliter cli has not been compiled, compiling..."
+    pushd twoliter || exit 1
+    cargo build --release
+    popd || exit 1
+fi
+
+twoliter/target/release/twoliter $@

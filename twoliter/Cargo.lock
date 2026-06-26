@@ -1737,7 +1737,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "edo"
 version = "0.1.0"
-source = "git+https://github.com/awslabs/edo?branch=develop#1d6d7ab61d9e0bec3321fcd6e4936c51e0fc1e89"
+source = "git+https://github.com/awslabs/edo?branch=develop#c41c23d0d7a90fda56afca7c8d66680ee0654a89"
 dependencies = [
  "arc-handle",
  "astral-tokio-tar",
@@ -1788,7 +1788,7 @@ dependencies = [
 [[package]]
 name = "edo-core"
 version = "0.1.0"
-source = "git+https://github.com/awslabs/edo?branch=develop#1d6d7ab61d9e0bec3321fcd6e4936c51e0fc1e89"
+source = "git+https://github.com/awslabs/edo?branch=develop#c41c23d0d7a90fda56afca7c8d66680ee0654a89"
 dependencies = [
  "astral-tokio-tar",
  "async-trait",

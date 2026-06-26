@@ -251,17 +251,3 @@ sync kit:
     @just _kit-toml {{kit}}
     @echo "creating package.toml files"
     @just _sync-packages {{kit}}
-
-build kit arch:
-    @echo "building all packages in {{kit}} for architecture {{arch}}"
-    bst -o arch {{arch}} build kits/{{kit}}/build.bst
-
-build-package kit arch package:
-    @echo "building package {{package}} in {{kit}} for architecture {{arch}}"
-    bst -o arch {{arch}} build packages/{{package}}/rpm.bst
-
-view-package kit arch package:
-    bst -o arch {{arch}} artifact list-contents packages/{{package}}/rpm.bst
-
-checkout-package kit arch package directory:
-    bst -o arch {{arch}} artifact checkout packages/{{package}}/rpm.bst --directory {{directory}}
