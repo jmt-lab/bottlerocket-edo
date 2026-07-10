@@ -19,41 +19,29 @@ pub mod error {
         #[snafu(display("io error: {source}"))]
         Io { source: std::io::Error },
         #[snafu(transparent)]
-        Context {
-            source: edo::context::ContextError,
-        },
+        Context { source: edo::context::ContextError },
         #[snafu(transparent)]
-        Storage {
-            source: edo::storage::StorageError,
-        },
+        Storage { source: edo::storage::StorageError },
         #[snafu(transparent)]
         Environment {
             source: edo::environment::EnvironmentError,
         },
         #[snafu(transparent)]
-        Oci {
-            source: ocilot::error::Error,
-        },
+        Oci { source: ocilot::error::Error },
         #[snafu(display("no kit located at address {addr}"))]
-        NoKit {
-            addr: Addr
-        },
+        NoKit { addr: Addr },
         #[snafu(transparent)]
-        Source {
-            source: edo::source::SourceError,
-        },
+        Source { source: edo::source::SourceError },
         #[snafu(transparent)]
         Transform {
             source: edo::transform::TransformError,
         },
         #[snafu(transparent)]
-        Core {
-            source: edo_core::error::Error,
-        },
+        Core { source: edo_core::error::Error },
         #[snafu(transparent)]
         Twoliter {
             source: twoliter::config::error::Error,
-        }
+        },
     }
 }
 
@@ -90,7 +78,6 @@ pub struct Args {
     #[clap(subcommand)]
     command: Commands,
 }
-
 
 impl Args {
     /// Resolve the user-supplied `--event-log` argument to an absolute
@@ -135,7 +122,7 @@ async fn main() -> Result<()> {
         Commands::Prune(cmd) => cmd.run(args.clone()).await?,
         Commands::Update(cmd) => cmd.run(args.clone()).await?,
         Commands::List(cmd) => cmd.run(args.clone()).await?,
-        Commands::Publish(cmd) => cmd.run(args.clone()).await?
+        Commands::Publish(cmd) => cmd.run(args.clone()).await?,
     }
     Ok(())
 }

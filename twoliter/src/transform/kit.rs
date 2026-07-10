@@ -3,16 +3,14 @@ use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
     source::Source,
-    storage::{
-        Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType,
-    },
+    storage::{Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType},
     transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
 };
 use ocilot::models::Platform;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use snafu::OptionExt;
-use std::path::{Path};
+use std::path::Path;
 use tracing::trace;
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -202,9 +200,7 @@ impl TransformImpl for KitTransform {
             // the kit only ships what we intend to publish.
             let package_names = self.discover_package_names(&build_root).await?;
             for pkg_name in package_names.iter() {
-                let src_dir = build_root
-                    .entry(format!("Packages/{pkg_name}"))
-                    .await;
+                let src_dir = build_root.entry(format!("Packages/{pkg_name}")).await;
                 if !build_root
                     .try_exists(format!("Packages/{pkg_name}"))
                     .await?
@@ -245,12 +241,8 @@ impl TransformImpl for KitTransform {
 
             // Step 2: Generate repodata over the assembled package set.
             let install_root_path: &str = install_root.as_ref();
-            vfs.command(
-                "createrepo",
-                "createrepo_c",
-                &[install_root_path],
-            )
-            .await?;
+            vfs.command("createrepo", "createrepo_c", &[install_root_path])
+                .await?;
 
             // Step 3: Sanity-check the repository with dnf.
             vfs.command(
@@ -272,9 +264,7 @@ impl TransformImpl for KitTransform {
             // descriptor from the SDK image artifact's `provides` (the
             // image URI, set by the OCI image source) and merge in
             // entries synthesised from this kit's local kit deps.
-            let kit_metadata = self
-                .build_kit_metadata(ctx, &package_names)
-                .await?;
+            let kit_metadata = self.build_kit_metadata(ctx, &package_names).await?;
 
             // Step 5: Materialise edo layers — one per package directory plus
             // one for the shared repodata directory. Each layer carries a
@@ -299,42 +289,65 @@ impl TransformImpl for KitTransform {
                 // We create the layer archive manually to control the path
                 let layer_aname = format!("layer-{pkg_name}");
                 let layer_archive = install_root.entry(&format!("{layer_aname}.tar")).await;
-                install_root.command(&layer_aname, "tar", &[
-                    "-cvf",
-                    layer_archive.as_ref(),
-                    "--sort=name",
-                    "-C",
-                    install_root.as_ref(),
-                    &format!("Packages/{pkg_name}")
-                ]).await?;
+                install_root
+                    .command(
+                        &layer_aname,
+                        "tar",
+                        &[
+                            "-cvf",
+                            layer_archive.as_ref(),
+                            "--sort=name",
+                            "-C",
+                            install_root.as_ref(),
+                            &format!("Packages/{pkg_name}"),
+                        ],
+                    )
+                    .await?;
                 // Now start the artifact layer
                 let writer = ctx.storage().safe_start_layer().await?;
-                env.read_stream(layer_archive.path(), writer.clone()).await?;
+                env.read_stream(layer_archive.path(), writer.clone())
+                    .await?;
                 // Now finish the layer and ensure the mediatype is the oci mediatype
-                let layer = ctx.storage().safe_finish_layer(&writer, &LayerOptions::builder()
-                    .media_type(MediaType::Tar(Compression::None))
-                    .build()
-                ).await?;
+                let layer = ctx
+                    .storage()
+                    .safe_finish_layer(
+                        &writer,
+                        &LayerOptions::builder()
+                            .media_type(MediaType::Tar(Compression::None))
+                            .build(),
+                    )
+                    .await?;
                 artifact.layers_mut().push(layer);
             }
 
             // Now we need to store the repodata folder
             let repo_name = "repodata.tar";
             let repo_path = install_root.entry(repo_name).await;
-            install_root.command(repo_name, "tar", &[
-                "-cvf",
-                repo_path.as_ref(),
-                "--sort=name",
-                "-C",
-                install_root.as_ref(),
-                "repodata"
-            ]).await?;
+            install_root
+                .command(
+                    repo_name,
+                    "tar",
+                    &[
+                        "-cvf",
+                        repo_path.as_ref(),
+                        "--sort=name",
+                        "-C",
+                        install_root.as_ref(),
+                        "repodata",
+                    ],
+                )
+                .await?;
             let writer = ctx.storage().safe_start_layer().await?;
             env.read_stream(repo_path.path(), writer.clone()).await?;
-            let layer = ctx.storage().safe_finish_layer(&writer, &LayerOptions::builder()
-                .media_type(MediaType::Tar(Compression::None))
-                .build()
-            ).await?;
+            let layer = ctx
+                .storage()
+                .safe_finish_layer(
+                    &writer,
+                    &LayerOptions::builder()
+                        .media_type(MediaType::Tar(Compression::None))
+                        .build(),
+                )
+                .await?;
             artifact.layers_mut().push(layer);
 
             ctx.storage().safe_save(&artifact).await?;
@@ -467,10 +480,7 @@ fn split_image_uri(uri: &str) -> (String, String) {
     if let Some(slash_idx) = uri.rfind('/') {
         if let Some(rel_colon) = uri[slash_idx..].rfind(':') {
             let split_at = slash_idx + rel_colon;
-            return (
-                uri[..split_at].to_string(),
-                uri[split_at + 1..].to_string(),
-            );
+            return (uri[..split_at].to_string(), uri[split_at + 1..].to_string());
         }
     } else if let Some((name, tag)) = uri.split_once(':') {
         return (name.to_string(), tag.to_string());
@@ -516,11 +526,17 @@ pub mod error {
         Context { source: ContextError },
         #[snafu(display("dependent package not found: {addr}"))]
         Depend { addr: Addr },
-        #[snafu(display("kit transform requires exactly one source pointing at the SDK image (the same source the SDK environments consume); none was declared"))]
+        #[snafu(display(
+            "kit transform requires exactly one source pointing at the SDK image (the same source the SDK environments consume); none was declared"
+        ))]
         MissingSdkSource,
-        #[snafu(display("kit transform requires exactly one source pointing at the SDK image; multiple sources were declared"))]
+        #[snafu(display(
+            "kit transform requires exactly one source pointing at the SDK image; multiple sources were declared"
+        ))]
         TooManySdkSources,
-        #[snafu(display("SDK image source artifact has no `provides` URI from which to extract the SDK version"))]
+        #[snafu(display(
+            "SDK image source artifact has no `provides` URI from which to extract the SDK version"
+        ))]
         MissingSdkProvides,
     }
 

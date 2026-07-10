@@ -1,8 +1,8 @@
 repos/
-elements/kits
-elements/bottlerocket-core-kit.bst
-elements/bottlerocket-kernel-kit.bst
+kits/
+packages/
 .flox/log
 .flox/run
 **/__pycache__
 .edo
+edo.lock.json

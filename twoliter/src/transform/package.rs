@@ -18,6 +18,13 @@ use sha2::Sha256;
 use snafu::OptionExt;
 use tracing::trace;
 
+/// Dummy spec that `Provides: group(builder)`. RPM 6.0 turned the automatic
+/// `group()`/`user()` dependencies generated from file-ownership declarations
+/// in `%files` (e.g. kernel-devel subpackages that `chgrp builder` some files)
+/// into hard `Requires`. Building this tiny package and adding it to the local
+/// repo satisfies that requirement without shipping anything.
+const BUILDER_GROUP_SPEC: &str = include_str!("builder-group.spec");
+
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct PackageBuildOptions {
     package: String,
@@ -396,7 +403,47 @@ impl TransformImpl for PackageBuildTransform {
                 .await?;
             }
 
-            // Step 7: Create local repo index over the rpm-root dependencies
+            // Step 7: Build a dummy package that Provides: group(builder). RPM 6.0 turned the
+            // automatic group()/user() Requires generated from %files ownership declarations
+            // (used by e.g. kernel-devel subpackages) into hard requirements. Build it in its
+            // own topdir and flatten the result into the shared local repo `rpms` dir (not into
+            // `rpms/{architecture}`, which is what Step 11 copies into the final artifact) so
+            // it's resolvable by builddep but never shipped.
+            let bg_root = vfs.create_dir("builder-group").await?;
+            bg_root.create_dir("BUILD").await?;
+            let bg_rpms = bg_root.create_dir("RPMS").await?;
+            bg_root.create_dir("SOURCES").await?;
+            let bg_specs = bg_root.create_dir("SPECS").await?;
+            let bg_specfile = bg_specs.entry("builder-group.spec").await;
+            vfs.write(&bg_specfile, BUILDER_GROUP_SPEC.as_bytes())
+                .await?;
+
+            vfs.command(
+                "builder-group",
+                "rpmbuild",
+                &[
+                    "-bb",
+                    "--clean",
+                    "--undefine _auto_set_build_flags",
+                    &format!("--define \"_target_cpu {architecture}\""),
+                    &format!("--define \"_topdir {:?}\"", bg_root.path()),
+                    bg_specfile.as_ref(),
+                ],
+            )
+            .await?;
+
+            vfs.command(
+                "stage-builder-group",
+                "cp",
+                &[
+                    "-r",
+                    &format!("{:?}/*/*.rpm", bg_rpms.path()),
+                    rpms.as_ref(),
+                ],
+            )
+            .await?;
+
+            // Step 8: Create local repo index over the rpm-root dependencies
             vfs.command(
                 "local_repo",
                 "createrepo_c",
@@ -411,7 +458,7 @@ impl TransformImpl for PackageBuildTransform {
             )
             .await?;
 
-            // Step 8: Install spec-declared BuildRequires via dnf builddep
+            // Step 9: Install spec-declared BuildRequires via dnf builddep
             vfs.command(
                 "builddeps",
                 "dnf",
@@ -450,7 +497,7 @@ impl TransformImpl for PackageBuildTransform {
                 ".0000000000.0.0.0.br1".to_string()
             };
 
-            // Step 9: Run rpmbuild with cross-compilation flags.
+            // Step 10: Run rpmbuild with cross-compilation flags.
             // TAR_OPTIONS=--no-same-owner: upstream source tarballs (e.g.
             // aws-efa-installer) carry uids/gids that are unmapped inside our
             // rootless container, which makes %prep's `tar -xf` fail with
@@ -474,7 +521,7 @@ impl TransformImpl for PackageBuildTransform {
             )
             .await?;
 
-            // Step 10: Copy built RPMS to the install-root
+            // Step 11: Copy built RPMS to the install-root
             let target = install_root
                 .create_dir(&format!("Packages/{}", self.options.package))
                 .await?;
@@ -571,5 +618,15 @@ pub mod error {
                 source: Box::new(value),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUILDER_GROUP_SPEC;
+
+    #[test]
+    fn builder_group_spec_provides_group_builder() {
+        assert!(BUILDER_GROUP_SPEC.contains("Provides: group(builder)"));
     }
 }

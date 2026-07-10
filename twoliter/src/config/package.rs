@@ -81,7 +81,13 @@ impl Package {
             // Each branch handles its own insertions; Addressed has no vendor
             // work to do, so we `continue` and skip the go/cargo loops below.
             let (out, go_modules, cargo_projects): (&str, &[String], &[PathBuf]) = match source {
-                Source::Url { url, digest, out, go_modules, cargo_projects } => {
+                Source::Url {
+                    url,
+                    digest,
+                    out,
+                    go_modules,
+                    cargo_projects,
+                } => {
                     let element = Element::builder()
                         .addr(address.clone())
                         .kind("remote")
@@ -93,9 +99,18 @@ impl Package {
                         .build();
                     archives.push(address.clone());
                     sources.insert(address.clone(), element);
-                    (out.as_str(), go_modules.as_slice(), cargo_projects.as_slice())
+                    (
+                        out.as_str(),
+                        go_modules.as_slice(),
+                        cargo_projects.as_slice(),
+                    )
                 }
-                Source::Local { path, out, go_modules, cargo_projects } => {
+                Source::Local {
+                    path,
+                    out,
+                    go_modules,
+                    cargo_projects,
+                } => {
                     let element = Element::builder()
                         .addr(address.clone())
                         .kind("local")
@@ -106,7 +121,11 @@ impl Package {
                         .build();
                     local_sources.push(address.clone());
                     sources.insert(address.clone(), element);
-                    (out.as_str(), go_modules.as_slice(), cargo_projects.as_slice())
+                    (
+                        out.as_str(),
+                        go_modules.as_slice(),
+                        cargo_projects.as_slice(),
+                    )
                 }
                 Source::Addressed { addr, vendored } => {
                     local_sources.push(addr.clone());
@@ -124,8 +143,9 @@ impl Package {
                     Some((l, r)) => (l, r),
                     None => (module.as_str(), out),
                 };
-                let bundle_addr = pkg_addr
-                    .join(&Addr::parse(&format!("src-{index}-go-vendored-{go_index}"))?);
+                let bundle_addr = pkg_addr.join(&Addr::parse(&format!(
+                    "src-{index}-go-vendored-{go_index}"
+                ))?);
                 transforms.insert(
                     bundle_addr.clone(),
                     Element::builder()
@@ -136,9 +156,7 @@ impl Package {
                             "default".to_string(),
                             vec![address.clone()],
                         )])))
-                        .config(BTreeMap::from([
-                            ("modules".to_string(), json!([module])),
-                        ]))
+                        .config(BTreeMap::from([("modules".to_string(), json!([module]))]))
                         .build(),
                 );
                 bundles.insert(bundle_addr, format!("bundled-{output}"));
@@ -159,9 +177,10 @@ impl Package {
                             "default".to_string(),
                             vec![address.clone()],
                         )])))
-                        .config(BTreeMap::from([
-                            ("cargo_tomls".to_string(), json!(cargo_projects)),
-                        ]))
+                        .config(BTreeMap::from([(
+                            "cargo_tomls".to_string(),
+                            json!(cargo_projects),
+                        )]))
                         .build(),
                 );
                 bundles.insert(bundle_addr, format!("bundled-{out}"));

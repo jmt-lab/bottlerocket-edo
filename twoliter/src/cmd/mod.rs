@@ -1,24 +1,24 @@
+mod build;
 mod checkout;
 mod list;
 mod prune;
-mod build;
+mod publish;
 mod run;
 mod update;
 mod util;
-mod publish;
 
 use std::collections::{BTreeMap, HashMap};
 
+pub use build::*;
 pub use checkout::*;
-use edo::context::{Element};
+use edo::context::Element;
 use edo::context::{Addr, Context, LogVerbosity};
 use edo_core::register_core;
 pub use list::*;
 pub use prune::*;
+pub use publish::*;
 pub use run::*;
 pub use update::*;
-pub use build::*;
-pub use publish::*;
 
 use crate::Args;
 use crate::Result;

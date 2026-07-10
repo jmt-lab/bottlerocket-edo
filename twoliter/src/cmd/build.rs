@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
+use crate::Args;
 use crate::Result;
 use clap::Parser;
 use edo::context::Addr;
-use crate::Args;
-
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "build a package,kit or variant", long_about = None)]
@@ -17,7 +16,7 @@ impl Build {
     pub async fn run(&self, args: Args) -> Result<()> {
         match &self.command {
             BuildCommands::Package(package) => package.run(args).await,
-            BuildCommands::Kit(kit) => kit.run(args).await
+            BuildCommands::Kit(kit) => kit.run(args).await,
         }
     }
 }
@@ -54,7 +53,6 @@ impl BuildPackage {
         Ok(())
     }
 }
-
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "build a kit in the project", long_about = None)]

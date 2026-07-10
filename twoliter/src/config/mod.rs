@@ -1,17 +1,16 @@
 use std::{fs::read_dir, path::Path};
 
 use edo::context::{Addr, Project, Schema};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-
-mod package;
 mod kit;
+mod package;
 mod twoliter;
 
-use package::Package;
-use twoliter::Twoliter;
 use kit::Kit;
+use package::Package;
 use snafu::{OptionExt, ResultExt};
+use twoliter::Twoliter;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "schema-version")]
@@ -30,7 +29,7 @@ pub enum ConfigType {
 
 enum Expect {
     Package,
-    Kit
+    Kit,
 }
 
 impl Config {
@@ -52,7 +51,12 @@ impl Config {
         Ok(project)
     }
 
-    fn walk<P: AsRef<Path>>(expect: &Expect, namespace: &Addr, path: P, schema: &mut Schema) -> Result<(), error::Error> {
+    fn walk<P: AsRef<Path>>(
+        expect: &Expect,
+        namespace: &Addr,
+        path: P,
+        schema: &mut Schema,
+    ) -> Result<(), error::Error> {
         let read = read_dir(path).context(error::IoSnafu)?;
         for entry in read {
             let entry = entry.context(error::IoSnafu)?;
@@ -62,7 +66,7 @@ impl Config {
                 // Check if there is a definition here, if so merge it up
                 let child_schema = match expect {
                     Expect::Kit => Self::kit_toml(namespace, &path)?,
-                    Expect::Package => Self::package_toml(namespace, &path)?
+                    Expect::Package => Self::package_toml(namespace, &path)?,
                 };
                 if let Some(child_schema) = child_schema.as_ref() {
                     schema.merge(child_schema);
@@ -79,13 +83,23 @@ impl Config {
         let twoliter_toml = path.as_ref().join("twoliter.toml");
         if twoliter_toml.try_exists().context(error::IoSnafu)? {
             let toml_schema = std::fs::read_to_string(&twoliter_toml).context(error::IoSnafu)?;
-            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu { path: twoliter_toml.clone() })?;
+            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu {
+                path: twoliter_toml.clone(),
+            })?;
             let mut schema = match config {
                 Config::V1(element) => match element {
                     ConfigType::Project(project) => Ok(project.to_edo()?),
-                    ConfigType::Package(_) => error::ExpectedSnafu { expected: "project", actual: "package" }.fail(),
-                    ConfigType::Kit(_) => error::ExpectedSnafu { expected: "project", actual: "kit" }.fail(),
-                }
+                    ConfigType::Package(_) => error::ExpectedSnafu {
+                        expected: "project",
+                        actual: "package",
+                    }
+                    .fail(),
+                    ConfigType::Kit(_) => error::ExpectedSnafu {
+                        expected: "project",
+                        actual: "kit",
+                    }
+                    .fail(),
+                },
             }?;
 
             // If there is a edo.toml in the path as well merge it in
@@ -93,7 +107,7 @@ impl Config {
                 schema.merge(&edo_schema);
             }
             schema.propagate();
-            return Ok(Some(schema))
+            return Ok(Some(schema));
         }
         // If there is a edo.toml in the path return this instead
         if let Some(mut schema) = Self::edo_toml(path)? {
@@ -108,13 +122,23 @@ impl Config {
         let kit_toml = path.as_ref().join("kit.toml");
         if kit_toml.try_exists().context(error::IoSnafu)? {
             let toml_schema = std::fs::read_to_string(&kit_toml).context(error::IoSnafu)?;
-            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu { path: kit_toml.clone() })?;
+            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu {
+                path: kit_toml.clone(),
+            })?;
             let mut schema = match config {
                 Config::V1(element) => match element {
                     ConfigType::Kit(kit) => Ok(kit.to_edo(namespace)?),
-                    ConfigType::Package(_) => error::ExpectedSnafu { expected: "kit", actual: "package" }.fail(),
-                    ConfigType::Project(_) => error::ExpectedSnafu { expected: "kit", actual: "project" }.fail(),
-                }
+                    ConfigType::Package(_) => error::ExpectedSnafu {
+                        expected: "kit",
+                        actual: "package",
+                    }
+                    .fail(),
+                    ConfigType::Project(_) => error::ExpectedSnafu {
+                        expected: "kit",
+                        actual: "project",
+                    }
+                    .fail(),
+                },
             }?;
 
             // If there is a edo.toml in the path as well merge it in
@@ -123,7 +147,7 @@ impl Config {
             }
             schema.propagate();
             schema.with_namespace(namespace);
-            return Ok(Some(schema))
+            return Ok(Some(schema));
         }
         // If there is a edo.toml in the path return this instead
         if let Some(mut schema) = Self::edo_toml(path)? {
@@ -135,17 +159,30 @@ impl Config {
         }
     }
 
-    fn package_toml<P: AsRef<Path>>(namespace: &Addr, path: P) -> Result<Option<Schema>, error::Error> {
+    fn package_toml<P: AsRef<Path>>(
+        namespace: &Addr,
+        path: P,
+    ) -> Result<Option<Schema>, error::Error> {
         let package_toml = path.as_ref().join("package.toml");
         if package_toml.try_exists().context(error::IoSnafu)? {
             let toml_schema = std::fs::read_to_string(&package_toml).context(error::IoSnafu)?;
-            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu { path: package_toml.clone() })?;
+            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu {
+                path: package_toml.clone(),
+            })?;
             let mut schema = match config {
                 Config::V1(element) => match element {
                     ConfigType::Package(pkg) => Ok(pkg.to_edo(namespace)?),
-                    ConfigType::Kit(_) => error::ExpectedSnafu { expected: "package", actual: "kit" }.fail(),
-                    ConfigType::Project(_) => error::ExpectedSnafu { expected: "package", actual: "kit" }.fail(),
-                }
+                    ConfigType::Kit(_) => error::ExpectedSnafu {
+                        expected: "package",
+                        actual: "kit",
+                    }
+                    .fail(),
+                    ConfigType::Project(_) => error::ExpectedSnafu {
+                        expected: "package",
+                        actual: "kit",
+                    }
+                    .fail(),
+                },
             }?;
 
             // If there is a edo.toml in the path as well merge it in
@@ -154,7 +191,7 @@ impl Config {
             }
             schema.propagate();
             schema.with_namespace(namespace);
-            return Ok(Some(schema))
+            return Ok(Some(schema));
         }
         // If there is a edo.toml in the path return this instead
         if let Some(mut schema) = Self::edo_toml(path)? {
@@ -170,15 +207,19 @@ impl Config {
         let edo_toml = path.as_ref().join("edo.toml");
         if edo_toml.try_exists().context(error::IoSnafu)? {
             let toml_schema = std::fs::read_to_string(&edo_toml).context(error::IoSnafu)?;
-            return Ok(Some(toml::from_str(&toml_schema).context(error::DeserializeSnafu { path: edo_toml.clone() })?))
+            return Ok(Some(toml::from_str(&toml_schema).context(
+                error::DeserializeSnafu {
+                    path: edo_toml.clone(),
+                },
+            )?));
         }
         Ok(None)
     }
 }
 
 pub mod error {
-    use std::path::PathBuf;
     use snafu::Snafu;
+    use std::path::PathBuf;
 
     #[derive(Snafu, Debug)]
     #[snafu(visibility(pub))]
@@ -186,12 +227,19 @@ pub mod error {
         #[snafu(transparent)]
         Context { source: edo::context::ContextError },
         #[snafu(display("failed to deserialize {path:?}: {source}"))]
-        Deserialize { path: PathBuf, source: toml::de::Error },
-        #[snafu(display("expected a {expected} configuration but received a {actual} configuration."))]
+        Deserialize {
+            path: PathBuf,
+            source: toml::de::Error,
+        },
+        #[snafu(display(
+            "expected a {expected} configuration but received a {actual} configuration."
+        ))]
         Expected { expected: String, actual: String },
         #[snafu(display("io error occured loading configuration: {source}"))]
         Io { source: std::io::Error },
-        #[snafu(display("not a twoliter project, no root level twoliter.toml or edo.toml found at {path:?}"))]
+        #[snafu(display(
+            "not a twoliter project, no root level twoliter.toml or edo.toml found at {path:?}"
+        ))]
         NotProject { path: PathBuf },
     }
 }

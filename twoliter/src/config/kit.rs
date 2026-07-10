@@ -15,7 +15,7 @@ pub struct Kit {
     #[serde(default)]
     pub cargo_projects: Vec<String>,
     #[serde(default)]
-    pub go_modules: Vec<String>
+    pub go_modules: Vec<String>,
 }
 
 impl Kit {
@@ -46,15 +46,17 @@ impl Kit {
                 Element::builder()
                     .addr(cargo_addr.clone())
                     .kind("cargo-vendor")
-                    .source(SourceMap::Unresolved(BTreeMap::from([
-                        ("default".to_string(), vec![src_addr.clone()])
-                    ])))
-                    .config(BTreeMap::from([
-                        ("cargo-tomls".to_string(), json!({
+                    .source(SourceMap::Unresolved(BTreeMap::from([(
+                        "default".to_string(),
+                        vec![src_addr.clone()],
+                    )])))
+                    .config(BTreeMap::from([(
+                        "cargo-tomls".to_string(),
+                        json!({
                             src_addr.last().unwrap(): &self.cargo_projects
-                        }))
-                    ]))
-                    .build()
+                        }),
+                    )]))
+                    .build(),
             );
         }
         if !self.go_modules.is_empty() {
@@ -64,13 +66,15 @@ impl Kit {
                 Element::builder()
                     .addr(go_addr.clone())
                     .kind("go-vendor")
-                    .source(SourceMap::Unresolved(BTreeMap::from([
-                        ("default".to_string(), vec![src_addr.clone()])
-                    ])))
-                    .config(BTreeMap::from([
-                        ("modules".to_string(), json!(&self.go_modules))
-                    ]))
-                    .build()
+                    .source(SourceMap::Unresolved(BTreeMap::from([(
+                        "default".to_string(),
+                        vec![src_addr.clone()],
+                    )])))
+                    .config(BTreeMap::from([(
+                        "modules".to_string(),
+                        json!(&self.go_modules),
+                    )]))
+                    .build(),
             );
         }
 
@@ -110,12 +114,10 @@ impl Kit {
                 "build-timestamp": "1778705221" // TODO: Calculate this properly
             }),
         )]);
-        Ok(
-            Schema::builder()
-                .config(config)
-                .source(sources)
-                .transform(transforms)
-                .build(),
-        )
+        Ok(Schema::builder()
+            .config(config)
+            .source(sources)
+            .transform(transforms)
+            .build())
     }
 }
