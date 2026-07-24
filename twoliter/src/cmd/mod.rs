@@ -37,28 +37,7 @@ pub async fn create_context(
     } else {
         LogVerbosity::Info
     };
-    // Query commands (`list`, `update`, `prune`, `checkout`) have no
-    // live build progress to render. Installing the ratatui inline
-    // canvas for them leaks terminal-control escapes into stdout
-    // (e.g. an `ESC[6n` cursor query at startup) and routes SESSION /
-    // PROJECT events into a canvas that never visibly renders because
-    // those commands don't drive `Context::run` (the only call site
-    // that invokes `Console::shutdown`). Coerce `Auto` and `Full` to
-    // `Simple` for these commands; `Simple` and `None` pass through
-    // unchanged so users can still opt into one-line-per-event output
-    // or full silence.
-    let mode = if wants_canvas {
-        args.console_mode
-    } else {
-        match args.console_mode {
-            edo::console::ConsoleMode::Full | edo::console::ConsoleMode::Auto => {
-                edo::console::ConsoleMode::Simple
-            }
-            other => other,
-        }
-    };
     let console_cfg = edo::context::ConsoleConfig {
-        mode,
         event_log: args.resolve_event_log(),
     };
     let ctx = Context::init(
@@ -78,12 +57,9 @@ pub async fn create_context(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    ctx.emit(edo::console::ConsoleEvent::SessionStarted {
-        edo_version: env!("CARGO_PKG_VERSION").to_string(),
-        target: target.to_string(),
-        args: variables.into_iter().collect(),
-        started_at_unix,
-    });
+    edo::header!(
+        "twoliter" @ &semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap() => target, variables.into_iter().collect()
+    );
     // Register all core component handlers
     register_core(&ctx);
     // Register all twoliter handlers

@@ -1,6 +1,5 @@
 use clap::Parser;
 use cmd::{Checkout, List, Prune, Run, Update};
-use edo::console::ConsoleMode;
 use std::{path::PathBuf, str::FromStr};
 
 use crate::cmd::{Build, Publish};
@@ -45,13 +44,6 @@ pub mod error {
     }
 }
 
-/// Parse `--console-mode` from a CLI string.
-fn parse_console_mode(s: &str) -> std::result::Result<ConsoleMode, String> {
-    ConsoleMode::from_str(s).map_err(|v| {
-        format!("unknown console mode '{v}' (expected one of auto, full, simple, none)")
-    })
-}
-
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "Edo build tool", long_about = None)]
 pub struct Args {
@@ -63,14 +55,6 @@ pub struct Args {
     config: Option<PathBuf>,
     #[arg(short, long)]
     storage: Option<PathBuf>,
-    /// How the build console renders progress.
-    ///
-    /// - `auto`: full canvas on TTY, simple stream otherwise (default).
-    /// - `full`: inline ratatui canvas at the bottom of the terminal.
-    /// - `simple`: one line per build event to stderr; CI-friendly.
-    /// - `none`: silent — only the rolling `.edo/logs/edo.jsonl` is written.
-    #[arg(long, default_value = "auto", value_parser = parse_console_mode)]
-    console_mode: ConsoleMode,
     /// Path to the JSONL build-event log; pass `none` to disable.
     /// Defaults to `<storage>/events.jsonl`.
     #[arg(long, default_value = "default")]

@@ -76,7 +76,14 @@ impl PublishKit {
                 // We want to upload each layer needed for the image
                 let mut oci_layers = Vec::new();
                 for artifact_layer in artifact.layers() {
-                    println!("writing layer: {}", artifact_layer.digest().digest());
+                    edo::ui_start_task!(
+                        subsystem = "kit",
+                        component = "layer",
+                        op = "publish";
+                        &artifact_layer.digest().digest(),
+                        edo::ui::UiTaskStatus::Running,
+                        None
+                    );
                     let mut reader = ctx.storage().safe_read(artifact_layer).await?;
                     oci_layers.push(
                         if let Some(mut oci_layer) = Layer::create(
@@ -101,6 +108,14 @@ impl PublishKit {
                                 .digest(format!("sha256:{}", artifact_layer.digest().digest()))
                                 .build()
                         },
+                    );
+                    edo::ui_update_task!(
+                        subsystem = "kit",
+                        component = "layer",
+                        op = "publish";
+                        &artifact_layer.digest().digest(),
+                        edo::ui::UiTaskStatus::Success,
+                        None
                     );
                 }
 
@@ -139,7 +154,6 @@ impl PublishKit {
                     }
                 });
                 let config_bytes = serde_json::to_vec(&config).unwrap();
-                println!("writing config");
                 let mut config_layer =
                     Layer::create(&uri, &MediaType::Config, config_bytes.len(), None, None)
                         .await?
