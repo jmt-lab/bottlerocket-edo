@@ -1738,22 +1738,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "dyn-clone"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
 name = "edo"
 version = "0.1.0"
+source = "git+https://github.com/awslabs/edo?branch=develop#0ef9aab931cab6d3a908ead6ab497e00cb272cef"
 dependencies = [
  "arc-handle",
- "astral-tokio-tar",
  "async-compression",
  "async-recursion",
  "async-trait",
- "aws-config",
- "aws-sdk-s3",
  "base16",
  "bimap",
  "bon",
@@ -1767,7 +1759,6 @@ dependencies = [
  "home",
  "indexmap",
  "jiff",
- "merkle_hash",
  "names",
  "ocilot",
  "os_pipe",
@@ -1775,9 +1766,7 @@ dependencies = [
  "rand 0.10.2",
  "ratatui",
  "regex",
- "reqwest",
  "resolvo",
- "schemars",
  "semver",
  "serde",
  "serde_json",
@@ -1790,14 +1779,13 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "url",
  "uuid",
- "which",
 ]
 
 [[package]]
 name = "edo-core"
 version = "0.1.0"
+source = "git+https://github.com/awslabs/edo?branch=develop#0ef9aab931cab6d3a908ead6ab497e00cb272cef"
 dependencies = [
  "astral-tokio-tar",
  "async-trait",
@@ -3985,26 +3973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ref-cast"
-version = "1.0.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
-dependencies = [
- "ref-cast-impl",
-]
-
-[[package]]
-name = "ref-cast-impl"
-version = "1.0.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "regex"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4084,9 +4052,9 @@ dependencies = [
 
 [[package]]
 name = "resolvo"
-version = "0.10.3"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2985c35f7dd19ed00659031b77ce05d1828a12eb9c6b37104da21b09d218fc24"
+checksum = "e1560db4f7a060680c14a93a927e049677bcc9a5a01fc0a2a57170dbee81e33a"
 dependencies = [
  "ahash",
  "bitvec",
@@ -4289,32 +4257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "schemars"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
-dependencies = [
- "dyn-clone",
- "ref-cast",
- "schemars_derive",
- "semver",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "schemars_derive"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde_derive_internals",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4396,17 +4338,6 @@ name = "serde_derive"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
-name = "serde_derive_internals"
-version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5320,6 +5251,7 @@ dependencies = [
  "clap",
  "edo",
  "edo-core",
+ "futures",
  "indexmap",
  "jiff",
  "nutype",

@@ -1,8 +1,8 @@
 - [-] Phase 1
   - [x] sources/kit-image.md
   - [x] sources/sdk-image.md
-  - [ ] sources/lookaside.md
-  - [x] cli/update - Done
+  - [x] sources/lookaside.md
+  - [x] cli/update
   - [ ] cli/fetch
   - [ ] config/overrides
   - [ ] config/twoliter-toml

@@ -1,92 +1,122 @@
-# Source: `lookaside`
+# Lookaside cache (S3 source cache)
 
-Fetch a single upstream file (typically a source tarball) via a two-tier
-lookup: try the project-configured lookaside cache first, then fall back to
-the upstream URL if permitted. Verify SHA-512 before returning.
+> **Not a source kind.** These are implementation notes for how the
+> old-buildsys "lookaside" behavior is expressed in twoliter using edo's
+> existing primitives. `src/lib.rs::register` does *not* register a
+> `lookaside` source kind, and there is no `crates/lookaside/`.
 
-Ports `old-twoliter/tools/buildsys/src/cache.rs::LookasideCache`.
+The old-buildsys `LookasideCache` (see
+`old-twoliter/tools/buildsys/src/cache.rs`) fetched external tarballs
+through a two-tier lookup: a lookaside mirror first, upstream URL as
+fallback, SHA-512 verified. Edo already offers every piece needed to
+recover this behavior without a bespoke source kind:
 
-## TOML surface
+- **`remote` source** (`edo-core/src/source/remote.rs`) fetches a URL,
+  verifies a SHA-256 content ref, and stores the blob content-addressed.
+  If the blob is already local it short-circuits without a network fetch.
+- **Source caches** (`//edo-source-cache/<name>`, priority-ordered)
+  transparently short-circuit `Source::fetch` when the artifact `Id` is
+  already present in a cache backend. On cache miss edo *automatically*
+  falls through to `Source::fetch`, which for a `remote` source pulls
+  from the upstream URL.
+- **`s3` storage backend** (`edo-core/src/storage/s3/mod.rs`) is already
+  registered under kind `"s3"` and can act as a source cache directly.
 
-External files are declared per package in
-`[[package.metadata.build-package.external-files]]` (or in `package.toml`'s
-`[[package.external-files]]` table in the new schema):
+Composing these three gives exactly the old lookaside behavior.
+
+## External files → `remote` sources
+
+External files are declared per package as `[[package.external-files]]`
+in `package.toml`. In the current schema these are represented as the
+existing `[[source]]` table with `kind = "url"` — see
+`src/config/package.rs::Source::Url`. `Package::to_edo` emits each entry
+as an edo element of kind `remote`:
 
 ```toml
+# package.toml
 [[package.external-files]]
 url = "https://cdn.example.com/kernel-6.1.42.tar.xz"
-sha512 = "e3b0c44…"
-# Optional: rename on disk.
-path = "kernel-6.1.42.tar.xz"
-# Optional: skip the lookaside and go straight upstream.
-force-upstream = false
-# Optional: `[BundleModule]` — go|rust, triggers cargo-vendor/go-vendor.
-bundle-modules = ["go"]
+ref = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+out = "kernel-6.1.42.tar.xz"
 ```
 
-Each entry produces an edo node with kind `lookaside`, addressed as
-`//packages/<pkg>/external/<hash-slug>`.
+Notes on the schema:
 
-## Behavior
+- `ref` is a **SHA-256** hex digest (optionally `sha256:`-prefixed, per
+  `RemoteSource::blob_digest`). SHA-512 is not accepted — edo hashes and
+  stores content by SHA-256.
+- `out` is the on-disk filename downstream transforms (e.g. `rpm`) see
+  under `SOURCES/`.
+- There is no `force-upstream` flag. Upstream fallback is always on:
+  when the source cache misses, edo calls `RemoteSource::fetch` against
+  `url` automatically.
+- There is no mtime normalization. Edo hashes content, not mtimes; the
+  mtime drift that motivated the old-buildsys workaround does not exist
+  in this pipeline.
 
-Implements `SourceImpl`:
+`Package::to_edo`'s existing `Source::Url` branch already emits the
+`kind = "remote"` element; no code change is needed to accept external
+files, only the doc alignment above.
 
-- `fetch(log, storage)`:
-  1. If the SHA-512 verified copy is already present at
-     `//edo-source-cache/lookaside/<sha512>/<filename>`, return it.
-  2. Compose the lookaside URL: `${lookaside-cache}/<name>/<sha512>/<name>`.
-     `${lookaside-cache}` comes from project config (defaults to
-     `https://cache.bottlerocket.aws`).
-  3. Fetch the lookaside URL. Verify SHA-512. On success, store and return.
-  4. On failure:
-     - If `force-upstream` or the project-wide `upstream-source-fallback` is
-       set, fetch `url`, verify, store, return.
-     - Otherwise fail with a clear error naming the missing hash.
-  5. Set the file's mtime to the project's canonical mtime so subsequent
-     builds don't spuriously invalidate.
-
-## Cache slot
-
-`//edo-source-cache/lookaside/<sha512>/<filename>`. Content-addressed by
-SHA-512 so multiple packages that pull the same file share the cache.
-
-## Global configuration
+## `[lookaside]` in `Twoliter.toml`
 
 ```toml
 # Twoliter.toml
 [lookaside]
-url = "https://cache.bottlerocket.aws"
-upstream-source-fallback = false
+bucket = "bottlerocket-lookaside-v2"
+prefix = "cache"          # optional
 ```
 
-The URL is passed to the source at construction. `upstream-source-fallback`
-is a per-project fallback flag; individual entries can still opt in via
-`force-upstream`.
+`Twoliter::to_edo` emits this as a `[cache.source.lookaside]` element
+of kind `s3` at address `//edo-source-cache/lookaside`, using
+`Schema::add_source_cache`. The two fields map 1:1 to
+`edo-core`'s `S3BackendOptions`: `bucket` is required, `prefix` is an
+optional key prefix.
 
-## Environment / permissions
+Region and credentials are taken from the ambient AWS config
+(`aws_config::load_defaults`), matching edo-core's S3 backend behavior.
+Anonymous / public-read access is not exposed today (see "Open items").
 
-Local farm — HTTP client only. Uses the same `User-Agent` string old
-buildsys did (`"Bottlerocket buildsys <version> (…)"`).
+When the `[lookaside]` table is absent, twoliter does *not* seed a
+`"lookaside"` source-cache entry. This leaves the slot free for an
+`edo.toml` overlay to define one, and `Schema::add_source_cache` is
+or-insert so an overlay can also override the twoliter-emitted entry.
+
+## Behavior at build time
+
+For each `[[package.external-files]]` entry:
+
+1. `Storage::fetch_source` checks every registered source cache for the
+   artifact `Id` derived from the `remote` element. The `lookaside`
+   cache (if configured) checks S3.
+2. **Hit:** the blob is returned from S3. No upstream network fetch.
+3. **Miss:** edo falls through to `RemoteSource::fetch`, which pulls
+   `url`, verifies against `ref`, and stores the blob into edo storage.
+   The next build with the same `Twoliter.toml` and `[lookaside]`
+   populated will find the blob on the S3 side once it has been
+   promoted there.
 
 ## Old-code references
 
-- `old-twoliter/tools/buildsys/src/cache.rs::LookasideCache::fetch` — the
-  reference implementation, port verbatim into `crates/lookaside/`.
-- `old-twoliter/tools/buildsys/src/manifest.rs::ExternalFile` — the schema
-  for a single entry.
-- `old-twoliter/tools/buildsys/src/gomod.rs`, `rustmod.rs`, `vendormod.rs` —
-  the vendored-modules hook. In new twoliter these are separate edo
-  transforms (`cargo-vendor`, `go-vendor`), and the `lookaside` source only
-  fetches the raw tarball.
+- `old-twoliter/tools/buildsys/src/manifest.rs::ExternalFile` — the
+  schema for a single entry. The `url` and hash fields survive; the
+  runtime does not.
 
-## Open questions
+The rest of `old-twoliter/tools/buildsys/src/cache.rs::LookasideCache`,
+including `force-upstream`, `upstream-source-fallback`, the composed
+`${lookaside}/<name>/<sha512>/<name>` URL layout, and the mtime
+normalization, is intentionally not ported. Rebuilding the S3 bucket
+from upstream sources is the migration path.
 
-- Does the source expose the file's on-disk path to consumers, or a
-  `Reader`? Both are useful — the `rpm` transform wants a path (to stage
-  into a `SOURCES/` dir); `cargo-vendor`/`go-vendor` want a stream. Follow
-  edo's convention: `Source::fetch` writes to a path in storage, the
-  transform reads from that path.
-- `mtime` normalization was a buildsys correctness fix (mtime drift caused
-  cargo to rebuild). Edo transforms hash contents, not mtimes, so the mtime
-  normalization is only relevant for tools running inside the container
-  (cargo/make). Keep it.
+## Open items
+
+- **Region / endpoint override.** `S3BackendOptions` deserializes only
+  `bucket` and `prefix`; it uses `aws_config::load_defaults` for auth
+  and region. That is fine for the AWS-hosted bottlerocket cache but
+  may need extending upstream if a fork wants to host lookaside on
+  MinIO or a non-default region.
+- **Public read-only access.** The old lookaside was an anonymous HTTPS
+  mirror. `aws-sdk-s3` clients can be configured for anonymous reads,
+  but `S3BackendOptions` doesn't expose that toggle today. If the new
+  bucket is public and the goal is "no AWS credentials required to
+  build," that needs a small edo-side change.

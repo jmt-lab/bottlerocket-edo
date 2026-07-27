@@ -1,6 +1,6 @@
 //! `kit-image` source: a thin wrapper around edo-core's `ImageSource`
 //! that additionally verifies a Bottlerocket kit metadata label
-//! (`dev.bottlerocket.kit.v3.metadata`) is present on the fetched image
+//! (`dev.bottlerocket.kit.v3`) is present on the fetched image
 //! config and decodes it into a [`KitMetadata`] struct.
 
 use async_trait::async_trait;
@@ -23,7 +23,10 @@ use std::collections::BTreeSet;
 
 /// The OCI image-config label that carries the base64-encoded
 /// [`KitMetadata`] blob written by the `kit` transform.
-pub const KIT_METADATA_LABEL: &str = "dev.bottlerocket.kit.v3.metadata";
+///
+/// This must match the label emitted by `cmd::publish` and the label
+/// used on all published Bottlerocket kit images.
+pub const KIT_METADATA_LABEL: &str = "dev.bottlerocket.kit.v3";
 
 /// A reference to another kit or the SDK, as recorded in [`KitMetadata`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -60,7 +63,7 @@ impl KitMetadata {
     }
 
     /// Encode this metadata as a base64 label suitable for the
-    /// `dev.bottlerocket.kit.v3.metadata` OCI image-config label.
+    /// `dev.bottlerocket.kit.v3` OCI image-config label.
     pub fn to_label(&self) -> Result<String, error::Error> {
         let bytes = serde_json::to_vec(self).context(error::MetadataEncodeSnafu)?;
         Ok(BASE64.encode(bytes))

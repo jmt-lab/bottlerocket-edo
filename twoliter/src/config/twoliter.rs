@@ -21,6 +21,27 @@ pub struct Twoliter {
     /// Kits pulled into every variant.
     #[serde(default)]
     pub kit: Vec<KitDep>,
+    /// Optional `[lookaside]` table. When present, emits an S3-backed
+    /// source cache named `"lookaside"` into the schema, so that
+    /// `[[package.external-files]]` (`kind = "remote"`) fetches
+    /// short-circuit to the S3 bucket before hitting the upstream URL.
+    #[serde(default)]
+    pub lookaside: Option<LookasideSpec>,
+}
+
+/// `[lookaside]` table.
+///
+/// Fields correspond 1:1 to `edo-core`'s `S3BackendOptions`:
+/// `bucket` is required and `prefix` is optional. Region and credentials
+/// come from the ambient AWS config (`aws_config::load_defaults`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct LookasideSpec {
+    /// S3 bucket that holds the shared source-cache blobs.
+    pub bucket: String,
+    /// Optional key prefix inside `bucket`.
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 /// `[sdk]` table.
@@ -123,17 +144,29 @@ impl Twoliter {
 
         // 2. SDK requirement at `//<sdk.name>`, resolved through the
         //    `<sdk.vendor>-sdk` vendor (kind `image`).
+        //
+        //    `Requirement.vendor` must be the *address* the vendor is
+        //    registered under, not the twoliter short name: edo's
+        //    `Resolver::add_vendor` keys vendors by `element.addr()`
+        //    (see `crates/edo/src/context/builder.rs`, "register vendor"),
+        //    and its candidate filter is a strict string equality against
+        //    `Requirement.vendor`. Emitting `"bottlerocket-sdk"` here
+        //    would never match the registered key
+        //    `"//vendor/bottlerocket-sdk"`, and the resolver would find
+        //    no candidates and hang / fail.
+        let sdk_vendor_addr = format!("//vendor/{}-sdk", self.sdk.vendor);
         let sdk_addr = Addr::parse(&format!("//{}", self.sdk.name))?;
         requires.insert(
             sdk_addr.clone(),
             Requirement {
                 kind: "image".to_string(),
                 at: self.sdk.version.clone(),
-                vendor: Some(format!("{}-sdk", self.sdk.vendor)),
+                vendor: Some(sdk_vendor_addr),
             },
         );
 
         // 3. Kit requirements at `//kits/<vendor>/<name>`, one per `[[kit]]`.
+        //    Same "vendor is an address" rule as (2).
         for kit in self.kit.iter() {
             if !self.vendor.contains_key(&kit.vendor) {
                 return Err(error::Error::UnknownKitVendor {
@@ -148,7 +181,7 @@ impl Twoliter {
                 Requirement {
                     kind: "kit-image".to_string(),
                     at: kit.version.clone(),
-                    vendor: Some(kit.vendor.clone()),
+                    vendor: Some(format!("//vendor/{}", kit.vendor)),
                 },
             );
         }
@@ -211,6 +244,33 @@ impl Twoliter {
                 )]))
                 .build(),
         );
+
+        // 6. Optional S3-backed source cache for `[[package.external-files]]`
+        //    (which are emitted as `kind = "remote"` sources by
+        //    `Package::to_edo`). This is the "lookaside" concept from old
+        //    buildsys, expressed as edo's native source-cache mechanism:
+        //    on cache hit the blob comes from S3, on cache miss edo falls
+        //    through to `RemoteSource::fetch` against the upstream URL.
+        //    Any `[cache.source.lookaside]` in an `edo.toml` overlay wins
+        //    because `Schema::add_source_cache` is or-insert.
+        if let Some(lookaside) = self.lookaside.as_ref() {
+            let lookaside_cache_addr = Addr::parse("//edo-source-cache/lookaside")?;
+            let mut config = BTreeMap::from([
+                ("bucket".to_string(), json!(&lookaside.bucket)),
+            ]);
+            if let Some(prefix) = lookaside.prefix.as_ref() {
+                config.insert("prefix".to_string(), json!(prefix));
+            }
+            schema.add_source_cache(
+                "lookaside",
+                Element::builder()
+                    .addr(lookaside_cache_addr)
+                    .kind("s3")
+                    .config(config)
+                    .build(),
+            );
+        }
+
         Ok(schema)
     }
 }
@@ -292,15 +352,18 @@ version = "=0.1.0"
             .requires()
             .get(&Addr::parse("//bottlerocket-sdk").unwrap())
             .unwrap();
-        assert_eq!(sdk_req.vendor.as_deref(), Some("bottlerocket-sdk"));
+        // `Requirement.vendor` must carry the vendor element's *address*
+        // (the key edo's resolver registers vendors under), not the
+        // twoliter short name.
+        assert_eq!(sdk_req.vendor.as_deref(), Some("//vendor/bottlerocket-sdk"));
         assert_eq!(sdk_req.kind, "image");
-        // Kit requirements still route through the `kit-image` vendor
-        // and keep the original vendor name (regression pin).
+        // Kit requirements still route through the `kit-image` vendor;
+        // pinned by address so the resolver's vendor filter matches.
         let kit_req = schema
             .requires()
             .get(&Addr::parse("//kits/bottlerocket/core-kit").unwrap())
             .unwrap();
-        assert_eq!(kit_req.vendor.as_deref(), Some("bottlerocket"));
+        assert_eq!(kit_req.vendor.as_deref(), Some("//vendor/bottlerocket"));
         assert_eq!(kit_req.kind, "kit-image");
     }
 
@@ -393,6 +456,99 @@ version = "=0.76.0"
         // With no `[vendor.*]` at all, deserialization should fail
         // because `vendor` is required (no `serde(default)`).
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn lookaside_table_emits_s3_source_cache() {
+        // A `[lookaside]` table with just a bucket produces a schema
+        // whose `"lookaside"` source-cache element has `kind = "s3"`
+        // and forwards the bucket into the element config.
+        let cfg = parse(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+
+[lookaside]
+bucket = "b"
+"#,
+        );
+        let schema = cfg.to_edo().expect("to_edo");
+        let cache = schema
+            .get_source_caches()
+            .get("lookaside")
+            .expect("lookaside cache emitted");
+        assert_eq!(cache.kind, "s3");
+        assert_eq!(
+            cache.config.get("bucket").and_then(|v| v.as_str()),
+            Some("b")
+        );
+        assert!(
+            !cache.config.contains_key("prefix"),
+            "prefix should be absent when not configured"
+        );
+    }
+
+    #[test]
+    fn lookaside_absent_emits_no_source_cache_override() {
+        // Without a `[lookaside]` table, twoliter must not seed a
+        // `"lookaside"` cache entry, so an `edo.toml` overlay can
+        // define one without collision.
+        let cfg = parse(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+"#,
+        );
+        let schema = cfg.to_edo().expect("to_edo");
+        assert!(
+            !schema.get_source_caches().contains_key("lookaside"),
+            "no lookaside cache should be seeded without a [lookaside] table"
+        );
+    }
+
+    #[test]
+    fn lookaside_with_prefix_forwards_prefix() {
+        // Both `bucket` and `prefix` should reach the emitted element
+        // config so `S3BackendOptions` can deserialize them.
+        let cfg = parse(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+
+[lookaside]
+bucket = "bottlerocket-lookaside-v2"
+prefix = "cache"
+"#,
+        );
+        let schema = cfg.to_edo().expect("to_edo");
+        let cache = schema
+            .get_source_caches()
+            .get("lookaside")
+            .expect("lookaside cache emitted");
+        assert_eq!(cache.kind, "s3");
+        assert_eq!(
+            cache.config.get("bucket").and_then(|v| v.as_str()),
+            Some("bottlerocket-lookaside-v2")
+        );
+        assert_eq!(
+            cache.config.get("prefix").and_then(|v| v.as_str()),
+            Some("cache")
+        );
     }
 
     #[test]

@@ -7,7 +7,11 @@ Each file here describes one edo `Source` kind that twoliter registers alongside
 |---|---|
 | [`kit-image`](kit-image.md) | Fetch an OCI kit image + verify its `dev.bottlerocket.kit.v3.metadata` label. |
 | [`sdk-image`](sdk-image.md) | *Not a real source kind.* The SDK is fetched through edo-core's built-in `image` source and `image` vendor; the doc explains why. |
-| [`lookaside`](lookaside.md) | Fetch RPM external files (upstream tarballs), verifying SHA-512, with lookaside + upstream fallback. |
+
+See also [`lookaside.md`](lookaside.md) — **notes, not a source kind.** It
+documents how the old-buildsys "lookaside" behavior is expressed in
+twoliter using edo's built-in `remote` source plus an `s3` source cache
+seeded by the `[lookaside]` table in `Twoliter.toml`.
 
 Registration lives in `src/lib.rs::register`:
 
@@ -45,6 +49,4 @@ vendor rewriting already works because `Twoliter::to_edo` emits an
 `image`-kind vendor over the same twoliter `[vendor.<name>].registry` URI.
 See [`sdk-image.md`](sdk-image.md) for the schema emission details.
 
-The `lookaside` source is completely unlike an OCI pull — it's SHA-512-verified
-tarball fetching, two-tier (lookaside URL first, upstream URL as fallback), and
-lives in `crates/lookaside/`.
+

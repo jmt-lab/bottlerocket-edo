@@ -3,7 +3,17 @@ schema-version = "3"
 [project.sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
-version = "=0.76.0"
+version = "=0.77.0"
+
+[[project.kit]]
+name = "bottlerocket-kernel-kit"
+vendor = "bottlerocket"
+version = "^7"
+
+[[project.kit]]
+name = "bottlerocket-core-kit"
+vendor = "bottlerocket"
+version = "14"
 
 [project.vendor.bottlerocket]
 registry = "public.ecr.aws/bottlerocket"
