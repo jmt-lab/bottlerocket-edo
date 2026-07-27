@@ -19,7 +19,9 @@ Goal: a clean project can `twoliter update`, `twoliter fetch`, and `twoliter
 build package` end-to-end without shelling out to the old tool.
 
 - [`sources/kit-image`](sources/kit-image.md) — kit source with metadata check.
-- [`sources/sdk-image`](sources/sdk-image.md) — SDK source.
+- [`sources/sdk-image`](sources/sdk-image.md) — schema fix: point the SDK
+  requirement at edo-core's built-in `image` source and `image` vendor
+  (no new twoliter source kind).
 - [`sources/lookaside`](sources/lookaside.md) — RPM external files.
 - [`cli/update`](cli/update.md) — wire to edo's lock refresh.
 - [`cli/fetch`](cli/fetch.md) — cache warm-up.

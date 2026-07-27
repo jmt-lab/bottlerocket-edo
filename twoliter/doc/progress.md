@@ -1,6 +1,6 @@
-- [ ] Phase 1
-  - [ ] sources/kit-image.md
-  - [ ] sources/sdk-image.md
+- [-] Phase 1
+  - [x] sources/kit-image.md
+  - [x] sources/sdk-image.md
   - [ ] sources/lookaside.md
   - [x] cli/update - Done
   - [ ] cli/fetch

@@ -66,18 +66,40 @@ impl Twoliter {
             .into());
         }
 
+        // Guard against name collisions between a kit vendor `<foo>` and
+        // another kit vendor `<foo>-sdk`: the SDK-vendor address we emit
+        // for `<foo>` (`//vendor/<foo>-sdk`) would clash with the
+        // kit-vendor address for `<foo>-sdk` (`//vendor/<foo>-sdk`).
+        for name in self.vendor.keys() {
+            if let Some(stripped) = name.strip_suffix("-sdk") {
+                if self.vendor.contains_key(stripped) {
+                    return Err(error::Error::VendorNameCollision {
+                        sdk_vendor: name.clone(),
+                        kit_vendor: stripped.to_string(),
+                    }
+                    .into());
+                }
+            }
+        }
+
         let mut vendors = BTreeMap::new();
         let mut requires = BTreeMap::new();
         let mut environments = BTreeMap::new();
 
-        // 1. One `kit-image` vendor per `[vendor.<name>]` entry, at
-        //    `//vendor/<name>`.
+        // 1. Per `[vendor.<name>]` entry, emit two vendor elements over
+        //    the same registry URI:
+        //    - `//vendor/<name>`     kind=kit-image (for kit requirements)
+        //    - `//vendor/<name>-sdk` kind=image     (for the SDK requirement)
+        //    The SDK image does not carry the kit-metadata label
+        //    `KitImageSource::fetch` requires, so the SDK is resolved
+        //    and fetched through edo-core's built-in `image` vendor and
+        //    `image` source instead. Kits continue to use `kit-image`.
         for (name, spec) in self.vendor.iter() {
-            let addr = Addr::parse(&format!("//vendor/{name}"))?;
+            let kit_addr = Addr::parse(&format!("//vendor/{name}"))?;
             vendors.insert(
-                addr.clone(),
+                kit_addr.clone(),
                 Element::builder()
-                    .addr(addr)
+                    .addr(kit_addr)
                     .kind("kit-image")
                     .config(BTreeMap::from([
                         ("uri".to_string(), json!(&spec.registry)),
@@ -85,18 +107,29 @@ impl Twoliter {
                     ]))
                     .build(),
             );
+            let sdk_vendor_addr = Addr::parse(&format!("//vendor/{name}-sdk"))?;
+            vendors.insert(
+                sdk_vendor_addr.clone(),
+                Element::builder()
+                    .addr(sdk_vendor_addr)
+                    .kind("image")
+                    .config(BTreeMap::from([(
+                        "uri".to_string(),
+                        json!(&spec.registry),
+                    )]))
+                    .build(),
+            );
         }
 
-        // 2. SDK requirement at `//<sdk.name>`. Kind is `kit-image` (the
-        //    SDK image also carries kit metadata; a dedicated `sdk-image`
-        //    kind is a follow-up).
+        // 2. SDK requirement at `//<sdk.name>`, resolved through the
+        //    `<sdk.vendor>-sdk` vendor (kind `image`).
         let sdk_addr = Addr::parse(&format!("//{}", self.sdk.name))?;
         requires.insert(
             sdk_addr.clone(),
             Requirement {
-                kind: "kit-image".to_string(),
+                kind: "image".to_string(),
                 at: self.sdk.version.clone(),
-                vendor: Some(self.sdk.vendor.clone()),
+                vendor: Some(format!("{}-sdk", self.sdk.vendor)),
             },
         );
 
@@ -225,19 +258,103 @@ version = "=0.1.0"
         assert!(requires.contains(&"//bottlerocket-sdk".to_string()));
         assert!(requires.contains(&"//kits/bottlerocket/core-kit".to_string()));
         assert!(requires.contains(&"//kits/my-vendor/extra-kit".to_string()));
-        // Vendors emitted at //vendor/<name>.
+        // Vendors emitted at `//vendor/<name>` (kit-image) and
+        // `//vendor/<name>-sdk` (image), one pair per twoliter vendor.
         let vendors: Vec<_> = schema.vendors().keys().map(|a| a.to_string()).collect();
         assert!(vendors.contains(&"//vendor/bottlerocket".to_string()));
+        assert!(vendors.contains(&"//vendor/bottlerocket-sdk".to_string()));
         assert!(vendors.contains(&"//vendor/my-vendor".to_string()));
+        assert!(vendors.contains(&"//vendor/my-vendor-sdk".to_string()));
+        // The `-sdk` vendor element uses kind `image` and points at the
+        // same registry URI as the twoliter vendor.
+        let sdk_vendor_elem = schema
+            .vendors()
+            .get(&Addr::parse("//vendor/bottlerocket-sdk").unwrap())
+            .expect("bottlerocket-sdk vendor emitted");
+        assert_eq!(sdk_vendor_elem.kind, "image");
+        assert_eq!(
+            sdk_vendor_elem
+                .config
+                .get("uri")
+                .and_then(|v| v.as_str()),
+            Some("public.ecr.aws/bottlerocket")
+        );
+        // The kit-image vendor element carries the original kind.
+        let kit_vendor_elem = schema
+            .vendors()
+            .get(&Addr::parse("//vendor/bottlerocket").unwrap())
+            .expect("bottlerocket kit vendor emitted");
+        assert_eq!(kit_vendor_elem.kind, "kit-image");
         // Cache slot present.
         assert!(schema.get_source_caches().contains_key("kit-image"));
-        // Requirements pin the vendor.
+        // SDK requirement resolves through the `-sdk` vendor at kind `image`.
         let sdk_req = schema
             .requires()
             .get(&Addr::parse("//bottlerocket-sdk").unwrap())
             .unwrap();
-        assert_eq!(sdk_req.vendor.as_deref(), Some("bottlerocket"));
-        assert_eq!(sdk_req.kind, "kit-image");
+        assert_eq!(sdk_req.vendor.as_deref(), Some("bottlerocket-sdk"));
+        assert_eq!(sdk_req.kind, "image");
+        // Kit requirements still route through the `kit-image` vendor
+        // and keep the original vendor name (regression pin).
+        let kit_req = schema
+            .requires()
+            .get(&Addr::parse("//kits/bottlerocket/core-kit").unwrap())
+            .unwrap();
+        assert_eq!(kit_req.vendor.as_deref(), Some("bottlerocket"));
+        assert_eq!(kit_req.kind, "kit-image");
+    }
+
+    #[test]
+    fn single_kit_project_emits_no_vendor_collision() {
+        // A project with a single vendor and a single kit must still
+        // produce a well-formed schema: one kit-image vendor and one
+        // image vendor at distinct addresses, with no collision.
+        let cfg = parse(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+
+[[kit]]
+name = "core-kit"
+vendor = "bottlerocket"
+version = "=1.42.0"
+"#,
+        );
+        let schema = cfg.to_edo().expect("to_edo");
+        let vendors: Vec<_> = schema.vendors().keys().map(|a| a.to_string()).collect();
+        assert_eq!(vendors.len(), 2, "one kit-image + one image vendor");
+        assert!(vendors.contains(&"//vendor/bottlerocket".to_string()));
+        assert!(vendors.contains(&"//vendor/bottlerocket-sdk".to_string()));
+    }
+
+    #[test]
+    fn rejects_vendor_name_collision_with_sdk_suffix() {
+        // If a project declares both `foo` and `foo-sdk` as vendors,
+        // the SDK-vendor address twoliter emits for `foo`
+        // (`//vendor/foo-sdk`) would collide with the kit-vendor
+        // address for `foo-sdk`. Surface a clear error.
+        let cfg = parse(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "foo"
+version = "=0.76.0"
+
+[vendor.foo]
+registry = "example.com/foo"
+
+[vendor.foo-sdk]
+registry = "example.com/foo-sdk"
+"#,
+        );
+        let err = cfg.to_edo().expect_err("should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("foo-sdk"), "error should name the collision: {msg}");
     }
 
     #[test]
@@ -314,6 +431,14 @@ pub mod error {
             "kit `{kit}` references unknown vendor `{vendor}`; add a `[vendor.{vendor}]` table"
         ))]
         UnknownKitVendor { vendor: String, kit: String },
+        #[snafu(display(
+            "vendor `{sdk_vendor}` collides with the SDK vendor address twoliter would emit for \
+             `{kit_vendor}` (`//vendor/{kit_vendor}-sdk`); rename one of them"
+        ))]
+        VendorNameCollision {
+            sdk_vendor: String,
+            kit_vendor: String,
+        },
     }
 
     impl From<Error> for edo::context::ContextError {

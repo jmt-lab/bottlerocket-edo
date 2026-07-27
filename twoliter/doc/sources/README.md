@@ -6,7 +6,7 @@ Each file here describes one edo `Source` kind that twoliter registers alongside
 | Kind | Purpose |
 |---|---|
 | [`kit-image`](kit-image.md) | Fetch an OCI kit image + verify its `dev.bottlerocket.kit.v3.metadata` label. |
-| [`sdk-image`](sdk-image.md) | Fetch the Bottlerocket SDK OCI image. |
+| [`sdk-image`](sdk-image.md) | *Not a real source kind.* The SDK is fetched through edo-core's built-in `image` source and `image` vendor; the doc explains why. |
 | [`lookaside`](lookaside.md) | Fetch RPM external files (upstream tarballs), verifying SHA-512, with lookaside + upstream fallback. |
 
 Registration lives in `src/lib.rs::register`:
@@ -22,10 +22,12 @@ registry.register_source(
 
 Kind strings are lowercase, hyphen-separated.
 
-## Why not just use `oci`?
+## Why not just use `oci` for kits?
 
-Edo's built-in `oci` source pulls arbitrary OCI images. For kits and SDKs we
-need two extra things:
+Edo ships two OCI-flavored source kinds out of the box: `oci` (pulls
+arbitrary OCI images) and `image` (pulls OCI images via a matching `image`
+vendor that also handles tag listing / semver resolution). For **kits** we
+need two extra things on top of that:
 
 1. **Kit metadata verification.** Reject any pulled image whose config does
    not carry a valid `dev.bottlerocket.kit.v<N>.metadata` label matching a
@@ -35,8 +37,13 @@ need two extra things:
    not an OCI concept; wrapping the pull in a twoliter-specific source keeps
    the metadata + rewriting logic together.
 
-`sdk-image` is a thinner wrapper (no kit-metadata check), but the same
-vendor-rewriting benefit applies.
+`kit-image` is that twoliter-specific wrapper.
+
+For the **SDK** we do just use edo-core's `image` source: the SDK image
+carries no kit-metadata label, so the metadata check would fail on it, and
+vendor rewriting already works because `Twoliter::to_edo` emits an
+`image`-kind vendor over the same twoliter `[vendor.<name>].registry` URI.
+See [`sdk-image.md`](sdk-image.md) for the schema emission details.
 
 The `lookaside` source is completely unlike an OCI pull — it's SHA-512-verified
 tarball fetching, two-tier (lookaside URL first, upstream URL as fallback), and
