@@ -1,0 +1,37 @@
+- [ ] Phase 1
+  - [ ] sources/kit-image.md
+  - [ ] sources/sdk-image.md
+  - [ ] sources/lookaside.md
+  - [x] cli/update - Done
+  - [ ] cli/fetch
+  - [ ] config/overrides
+  - [ ] config/twoliter-toml
+  - [ ] config/package-toml
+- [ ] Phase 2
+  - [ ] image-building
+  - [ ] buildsys manifest types
+  - [ ] cli/internal-subcommands
+  - [ ] transforms/variant-image
+  - [ ] config/variant-toml
+  - [ ] cli/build variant
+  - [ ] config/mod.rs to walk variants/*/
+- [ ] Phase 3
+  - [ ] publish/publish-kit.md
+  - [ ] publish/ami.md
+  - [ ] publish/repo.md
+  - [ ] publish/setup-tuf.md
+  - [ ] publish/infra-toml.md
+- [ ] Phase 4
+  - [ ] transforms/eif.md
+  - [ ] transforms/kmodkit.md
+  - [ ] transforms/migrations.md
+  - [ ] transforms/repack-variant.md
+  - [ ] transforms/advisory-check.md
+  - [ ] transforms/kit-metadata.md
+- [ ] Phase 5
+  - [ ] publish/ssm.md
+  - [ ] publish/ova.md
+  - [ ] publish/ami grant/revoke/validate/public sub-subcommands
+  - [ ] cli/pcrsys.md
+  - [ ] cli/check.md
+  - [ ] cli/debug.md
