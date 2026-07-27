@@ -1746,7 +1746,6 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "edo"
 version = "0.1.0"
-source = "git+https://github.com/awslabs/edo?branch=develop#6f39da17055c7e0842f36040bbd92e7db1440b53"
 dependencies = [
  "arc-handle",
  "astral-tokio-tar",
@@ -1799,7 +1798,6 @@ dependencies = [
 [[package]]
 name = "edo-core"
 version = "0.1.0"
-source = "git+https://github.com/awslabs/edo?branch=develop#6f39da17055c7e0842f36040bbd92e7db1440b53"
 dependencies = [
  "astral-tokio-tar",
  "async-trait",
@@ -1815,6 +1813,7 @@ dependencies = [
  "merkle_hash",
  "names",
  "ocilot",
+ "regex",
  "reqwest",
  "semver",
  "serde",

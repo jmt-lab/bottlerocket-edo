@@ -1,5 +1,9 @@
 schema-version = "3"
 
-[project]
+[project.sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[project.vendor.bottlerocket]
 registry = "public.ecr.aws/bottlerocket"
-sdk      = "=0.76.0"

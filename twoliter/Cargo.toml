@@ -31,3 +31,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 test-case = "3"
+
+# Local edo checkout — vendor pinning support (D4) has not been released
+# on `develop` yet. Remove this patch once the upstream commit lands and
+# the git dep resolves to it.
+[patch."https://github.com/awslabs/edo"]
+edo = { path = "/home/fedora/edo/crates/edo" }
+edo-core = { path = "/home/fedora/edo/crates/core" }
