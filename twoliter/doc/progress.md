@@ -7,10 +7,9 @@
   - [x] config/overrides
   - [x] config/twoliter-toml
   - [x] config/package-toml
-- [ ] Phase 2
+- [-] Phase 2
   - [x] image-building
-  - [ ] buildsys manifest types
-  - [ ] cli/internal-subcommands
+  - [x] buildsys manifest types
   - [ ] transforms/variant-image
   - [ ] config/variant-toml
   - [ ] cli/build variant

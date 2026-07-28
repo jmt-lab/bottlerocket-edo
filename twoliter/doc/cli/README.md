@@ -32,7 +32,6 @@ subcommand or as a `cargo make` target.
 | [`check.md`](check.md) | `twoliter check advisories`, `twoliter check lockfile`, etc. |
 | [`debug.md`](debug.md) | `twoliter debug` (dump tools, dump graph, dump lockfile). |
 | [`pcrsys.md`](pcrsys.md) | `twoliter pcrsys disk \| ami` (PCR prediction). |
-| [`internal-subcommands.md`](internal-subcommands.md) | `twoliter internal …` (hidden; used by container-side transform bodies). |
 
 ## Global flags
 

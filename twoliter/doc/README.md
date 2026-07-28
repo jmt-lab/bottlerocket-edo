@@ -97,9 +97,7 @@ what they define:
 - [`transforms/`](transforms/) — each new `Transform` kind that must be
   registered with the edo `Registry`.
 - [`sources/`](sources/) — each new `Source` kind (kit-image, sdk-image, lookaside).
-- [`cli/`](cli/) — twoliter CLI subcommands and their arguments (including
-  the hidden `twoliter internal …` commands the container-side transforms
-  self-invoke).
+- [`cli/`](cli/) — twoliter CLI subcommands and their arguments.
 - [`publish/`](publish/) — publishing paths (AMI, SSM, repo, OVA, publish-kit,
   TUF setup) that run outside the DAG.
 

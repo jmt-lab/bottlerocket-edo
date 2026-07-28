@@ -117,7 +117,7 @@ primitives live in `br-image`; see
 `Transform::transform` (in `src/transform/variant.rs`) roughly:
 
 ```rust
-async fn transform(&self, ctx: Context, log: Log, storage: Storage) -> TransformStatus {
+async fn transform(&self, log: &Log, ctx: &Handle, env: &Environment) -> TransformStatus {
     let opts   = self.opts.clone();
     let arch   = opts.arch;
     let layout = br_image::layout::resolved_image_layout(
@@ -125,65 +125,47 @@ async fn transform(&self, ctx: Context, log: Log, storage: Storage) -> Transform
     br_image::layout::validate_image_features(
         &opts.image_features, &layout, opts.image_format)?;
 
+    let id = self.get_unique_id(ctx).await?;
+    let vfs = Vfs::new(&id, env, log).await?;
+
     // 1. Stage RPMs + guest images from cached edo layers into the
-    //    container's `/local/*` overlay. All storage-level reads happen up
-    //    front so the rest is pure filesystem manipulation.
-    let staged = self.stage_inputs(&storage).await?;
+    //    container's `/local/*` overlay via the Vfs.
+    self.stage_inputs(&vfs, ctx).await?;
 
-    // 2. Enter container and run the build. We use a single ContainerScript
-    //    Environment that receives the staged tree and invokes our own
-    //    Rust code as its entrypoint (the twoliter binary itself, invoked
-    //    inside the container).
-    let env = ctx.get_environment(&self.farm).await?;
-
-    // The actual work is performed by an internal command implemented in
-    // `crates/twoliter/src/internal/build_variant.rs`, which the twoliter
-    // binary exposes as `twoliter internal build-variant <input-dir> ...`.
-    // Inside the container, this internal command:
+    // 2. Run each build step against the Vfs. Every subprocess below is
+    //    a `vfs.command(...)` call; edo dispatches into the container.
+    //    Every function in `br-image` takes `&Vfs`, so the transform body
+    //    is a straight sequence of typed calls.
     //
     //   a. compute_partition_layout(&layout, &features)   [partyplanner]
     //   b. truncate + sgdisk to build the OS disk         [partyplanner]
     //   c. mkfs on each partition                         [imghelper]
-    //   d. stage_root(package_dir, root_mount)            [imghelper]
+    //   d. stage_root(&vfs, package_dir, root_mount)      [imghelper]
     //         - dnf install --installroot=<root> …
     //         - install CA certs
     //         - install tuf root.json
     //         - SELinux relabel
-    //   e. copy_guest_artifacts(&guests, root_mount)      [guest-images-helper]
-    //   f. generate_verity_root(root_image, verity_image) [imghelper]
+    //   e. copy_guest_artifacts(&vfs, &guests, root_mount) [guest-images-helper]
+    //   f. generate_verity_root(&vfs, root_image, verity_image) [imghelper]
     //   g. write boot-config with the verity params       [bootconfig]
     //   h. Grub::install + optional secure-boot signing    [imghelper]
     //   i. compress every artifact per format               [imghelper]
-    //   j. generate_sbom(sbom_dir, output_dir)             [imghelper]
+    //   j. generate_sbom(&vfs, sbom_dir, output_dir)      [imghelper]
     //   k. write variant manifest.json                      [metadata]
-    //   l. optional generate_ova(os_image, ovf_template)   [imghelper]
+    //   l. optional generate_ova(&vfs, os_image, ovf_template) [imghelper]
+    self.build(&vfs, &layout, ...).await?;
 
-    env.run(build_variant_cmd(&staged)).await?;
-
-    // 3. Collect outputs from the staging area and stage them as OCI layers.
-    self.collect_outputs(&staged, &storage).await
+    // 3. Collect outputs from the Vfs and stage them as OCI layers.
+    self.collect_outputs(&vfs, ctx).await
 }
 ```
 
-### Why "twoliter internal build-variant" runs inside the container
-
-Two options for driving Rust code from inside the container:
-
-1. **Ship `br-image` as a standalone binary.** Extra artifact to build and
-   distribute; extra thing that can version-skew from the twoliter binary.
-2. **Have the twoliter binary invoke itself in the container** via an
-   internal (hidden) subcommand `twoliter internal build-variant …`. The
-   twoliter binary is already staged into the container (as an overlay
-   layer, one layer per transform run — it's small enough).
-
-Recommendation: **option 2**. The twoliter binary is a single artifact; the
-container invocation is a documented internal subcommand that's stable
-across the twoliter release. See [`internal-subcommands.md`](../cli/internal-subcommands.md)
-for the surface.
-
-The internal subcommand's arguments encode everything old `rpm2img` took as
-flags: `--package-dir`, `--output-dir`, `--partition-plan`, feature flags,
-etc. Not user-facing.
+This is the same shape `src/transform/package.rs` and `src/transform/kit.rs`
+already use: construct a `Vfs`, then let `br-image` functions drive the
+container through it. No second twoliter invocation runs inside the
+container; there is no `twoliter internal build-variant` entrypoint. The
+build logic is Rust in one binary, exercised via `Vfs::command` and the
+other `Vfs` methods.
 
 ## Unique-id
 
@@ -233,11 +215,7 @@ every variant's cache — which is correct.
   arch as a runtime argument? Recommendation: one node per variant, with
   `arch` as an element attribute — mirrors old twoliter's
   `BUILDSYS_ARCH=<arch> cargo make build-variant`.
-- **The "internal subcommand" pattern.** Alternative: `br-image` is a
-  library, and we build a thin `br-image-cli` binary that lives inside the
-  container as part of the SDK. That's cleaner but introduces a new SDK
-  dependency. Stick with the "twoliter invokes itself" pattern for now.
 - **SELinux relabel** used to happen in `stage_images` inside the container
-  because `setfiles` needs the target's policy files. It stays inside the
-  container in the new model too; `br-image::selinux::relabel(root_mount)`
-  shells out to `setfiles` there.
+  because `setfiles` needs the target's policy files. It still runs inside
+  the container in the new model; `br_image::selinux::compute_labels(&vfs,
+  root_mount, contexts)` dispatches `setfiles` there via the Vfs.

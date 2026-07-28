@@ -52,18 +52,21 @@ Ports the `img2img` script into `src/transform/repack.rs`. The heavy lifting
 comes from `br-image`; the transform mostly orchestrates.
 
 ```rust
-async fn transform(&self, ctx: Context, log: Log, storage: Storage) -> TransformStatus {
-    // 1. Materialize the source variant's layers to a scratch dir.
-    let source = self.materialize_source(&storage).await?;
-    // source contains: os.img.lz4, boot.ext4.lz4, root.ext4.lz4,
-    // verity.lz4, boot-config, manifest.json, sbom.spdx.json.
+async fn transform(&self, log: &Log, ctx: &Handle, env: &Environment) -> TransformStatus {
+    let id = self.get_unique_id(ctx).await?;
+    let vfs = Vfs::new(&id, env, log).await?;
+
+    // 1. Materialize the source variant's layers into the Vfs.
+    // Contains: os.img.lz4, boot.ext4.lz4, root.ext4.lz4, verity.lz4,
+    // boot-config, manifest.json, sbom.spdx.json.
+    self.stage_source(&vfs, ctx).await?;
 
     // 2. Stage the replacement/additional kits' RPMs.
-    let extra_rpms = self.stage_extra_rpms(&storage).await?;
+    self.stage_extra_rpms(&vfs, ctx).await?;
 
-    let env = ctx.get_environment(&self.farm).await?;
-
-    // 3. In-container work:
+    // 3. Repack. Every step below is a call into `br-image`; every
+    //    subprocess is a `vfs.command(...)` that edo dispatches into the
+    //    container.
     //    a. Decompress the OS image.
     //    b. Loop-mount ROOT-A.
     //    c. dnf --installroot=<root> install <extra RPMs>
@@ -76,11 +79,11 @@ async fn transform(&self, ctx: Context, log: Log, storage: Storage) -> Transform
     //    g. Update the boot-config with the new verity hash.
     //    h. Re-compress everything.
     //    i. Update variant manifest.json.
-    env.run(build_repack_cmd(&source, &extra_rpms)).await?;
+    self.build(&vfs, ...).await?;
 
     // 4. Collect outputs, marking the OCI manifest with the annotation
     //    bottlerocket.repack-of=<source-variant-digest>.
-    self.collect_outputs(&source, &storage).await
+    self.collect_outputs(&vfs, ctx).await
 }
 ```
 

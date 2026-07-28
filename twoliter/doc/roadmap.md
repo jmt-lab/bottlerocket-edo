@@ -50,12 +50,11 @@ whole port.
   `validate_image_features`) from
   `old-twoliter/tools/buildsys/src/manifest.rs` into
   `crates/br-image/src/{model,layout}.rs`.
-- [`cli/internal-subcommands`](cli/internal-subcommands.md) — wire up the
-  hidden `twoliter internal build-variant` command that the transform
-  invokes inside the container.
 - [`transforms/variant-image`](transforms/variant-image.md) — the transform
   itself. Ports the ~747-line `rpm2img` driver into
-  `src/transform/variant.rs` plus the internal subcommand body.
+  `src/transform/variant.rs`. The transform body drives the container
+  through its `edo::environment::Vfs`, the same pattern `package.rs` and
+  `kit.rs` already use.
 - [`config/variant-toml`](config/variant-toml.md) — `variant.toml` schema.
 - [`cli/build`](cli/build.md) `twoliter build variant` subcommand.
 - Extend [`config/mod.rs`](../src/config/mod.rs) to walk `variants/*/`.
@@ -89,7 +88,6 @@ these leans on `crates/br-image/` from Phase 2.
 - [`transforms/eif`](transforms/eif.md) — `eif-builder` becomes
   `crates/eif-builder/` (already close to a library). Port ~569-line
   `rpm2eif` into `src/transform/eif.rs` + `br_image::eif::extract_vmlinux`.
-  Wire `twoliter internal build-eif`.
 - [`transforms/kmodkit`](transforms/kmodkit.md) — port the 57-line
   `rpm2kmodkit` into `src/transform/kmodkit.rs`. Extract the OCI writer
   from `src/transform/kit.rs` into `src/transform/oci_pack.rs` first.
@@ -99,7 +97,6 @@ these leans on `crates/br-image/` from Phase 2.
 - [`transforms/repack-variant`](transforms/repack-variant.md) — port the
   426-line `img2img` into `src/transform/repack.rs` +
   `br_image::filesystem::{debugfs_replace,grow_ext4,write_partition_bytes}`.
-  Wire `twoliter internal repack-variant`.
 - [`transforms/advisory-check`](transforms/advisory-check.md) — port
   `advisory-checker` binary.
 - [`transforms/kit-metadata`](transforms/kit-metadata.md) — refactor if the

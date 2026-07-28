@@ -67,28 +67,32 @@ The transform is essentially `variant-image`'s pipeline restricted to
 followed by an EIF assembly step:
 
 ```rust
-async fn transform(&self, ctx: Context, log: Log, storage: Storage) -> TransformStatus {
+async fn transform(&self, log: &Log, ctx: &Handle, env: &Environment) -> TransformStatus {
     let opts = self.opts.clone();
     br_image::layout::validate_eif_features(&opts.image_features)?;
 
-    let staged = self.stage_inputs(&storage).await?;
-    let env = ctx.get_environment(&self.farm).await?;
+    let id = self.get_unique_id(ctx).await?;
+    let vfs = Vfs::new(&id, env, log).await?;
 
-    // Inside the container, the twoliter internal subcommand does:
-    //   a. eif_partition_layout(...)                           [partyplanner]
-    //   b. sgdisk on the disk image with ROOT-A + HASH-A only  [partyplanner]
-    //   c. mkfs.erofs for ROOT-A                                [imghelper]
-    //   d. stage_root(package_dir, root_mount) [minimal]        [imghelper]
-    //   e. generate_verity_root(root_image, hash_image)         [imghelper]
-    //   f. extract_vmlinux(root_mount, arch)                    [rpm2eif]
+    self.stage_inputs(&vfs, ctx).await?;
+
+    // Every step below is a call into `br-image` (which drives subprocesses
+    // through the Vfs) or into the linked `eif-builder` library. No second
+    // twoliter invocation runs inside the container.
+    //   a. eif_partition_layout(...)                              [partyplanner]
+    //   b. sgdisk on the disk image with ROOT-A + HASH-A only     [partyplanner]
+    //   c. mkfs.erofs for ROOT-A                                   [imghelper]
+    //   d. stage_root(&vfs, package_dir, root_mount) [minimal]     [imghelper]
+    //   e. generate_verity_root(&vfs, root_image, hash_image)      [imghelper]
+    //   f. extract_vmlinux(&vfs, root_mount, arch)                 [rpm2eif]
     //         → flat kernel bytes (arch-dependent)
     //   g. eif_builder::build(kernel_bytes, cmdline, mem, cpus,
-    //                         pcie_flags, arch, versions)      [eif-builder]
+    //                         pcie_flags, arch, versions)         [eif-builder]
     //         → writes {name}.eif directly
-    //   h. write manifest.json                                   [metadata]
+    //   h. write manifest.json                                     [metadata]
+    self.build(&vfs, ...).await?;
 
-    env.run(build_eif_cmd(&staged)).await?;
-    self.collect_outputs(&staged, &storage).await
+    self.collect_outputs(&vfs, ctx).await
 }
 ```
 

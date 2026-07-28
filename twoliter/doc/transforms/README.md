@@ -23,9 +23,12 @@ from `partyplanner`, `imghelper`, `guest-images-helper` and every subprocess
 wrapper (`sgdisk`, `mkfs.*`, `veritysetup`, `lz4`, `dnf`, `syft`, `grub-install`,
 `sbsign`). None of these transforms ship an embedded shell script.
 
-The transform bodies run inside the container by having the twoliter binary
-self-invoke through hidden `twoliter internal <step>` subcommands — see
-[`../cli/internal-subcommands.md`](../cli/internal-subcommands.md).
+The transform bodies run on the host and dispatch work into the container
+through the transform's `edo::environment::Vfs` handle — the same pattern
+the existing `rpm` (`src/transform/package.rs`) and `kit`
+(`src/transform/kit.rs`) transforms already use. Every subprocess is a
+`vfs.command(...)` call; every filesystem op is a `Vfs` method. No second
+twoliter invocation runs inside the container.
 
 Each spec follows a common shape (see `variant-image.md` for the template):
 

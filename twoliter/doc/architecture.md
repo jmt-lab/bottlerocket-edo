@@ -155,11 +155,13 @@ spec'd in [`image-building.md`](image-building.md). Summary:
   monolithic Dockerfile; each transform declares its own environment overlay.
 - `Makefile.toml`: **delete**. Targets become twoliter subcommands or DAG addrs.
 
-The image-building transforms invoke their Rust bodies inside the container
-via a hidden `twoliter internal …` subcommand family — see
-[`cli/internal-subcommands.md`](cli/internal-subcommands.md). This means one
-binary on both sides of the container boundary; no separate `br-image-cli`
-artifact.
+The image-building transforms run their Rust bodies on the host and drive
+work in the container through the transform's `edo::environment::Vfs`
+handle. Every subprocess (`sgdisk`, `mkfs.*`, `veritysetup`, `lz4`, `dnf`,
+`syft`, `grub-install`) is issued via `vfs.command(...)`, which edo
+dispatches to the container. There is no second twoliter invocation inside
+the container and no separate `br-image-cli` artifact — this is the same
+pattern the existing `rpm` and `kit` transforms already use.
 
 ## What used to be embedded tool binaries
 
