@@ -1,12 +1,12 @@
-- [-] Phase 1
+- [x] Phase 1
   - [x] sources/kit-image.md
   - [x] sources/sdk-image.md
   - [x] sources/lookaside.md
   - [x] cli/update
   - [x] cli/fetch
   - [x] config/overrides
-  - [ ] config/twoliter-toml
-  - [ ] config/package-toml
+  - [x] config/twoliter-toml
+  - [x] config/package-toml
 - [ ] Phase 2
   - [ ] image-building
   - [ ] buildsys manifest types

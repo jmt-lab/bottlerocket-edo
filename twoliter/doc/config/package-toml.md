@@ -1,6 +1,10 @@
 # `package.toml` schema
 
-Per-package configuration. One per directory under `packages/`.
+Per-package configuration. One per directory under `packages/`. The file is
+optional: a directory with only an RPM `.spec` file and no `package.toml` is
+picked up by directory walk but contributes no schema of its own. Any
+`edo.toml` alongside `package.toml` is merged in after the derived schema
+(see `src/config/mod.rs::Config::package_toml`).
 
 ## Shape
 
@@ -9,84 +13,113 @@ schema-version = "3"
 
 [package]
 name = "kernel-6.1"
-# Optional; overrides the default package-name derived from the directory.
-# package-name = "kernel"
+# depends: RPMs that must be built before this one. Each entry `foo`
+# becomes an edge to `//packages/foo/rpm`.
+depends = ["glibc", "openssl"]
 
-# RPM external files (upstream tarballs).
-[[package.external-files]]
+# Upstream tarball fetched via edo's `remote` source. The `[lookaside]`
+# S3 source cache in Twoliter.toml (if present) sits transparently in
+# front of this fetch — cache hit reads from S3, miss falls through to
+# `url` and verifies against `ref`.
+[[package.source]]
 url = "https://cdn.example.com/kernel-6.1.42.tar.xz"
-sha512 = "e3b0c44…"
-path = "kernel-6.1.42.tar.xz"           # optional; rename on disk
-force-upstream = false                  # optional
-bundle-modules = ["go"]                 # optional: "go" | "rust"
+ref = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+out = "kernel-6.1.42.tar.xz"
+# Optional: vendor Go modules found in this source tree. Each entry is a
+# module path, optionally suffixed with `@<name>` to override the output
+# name (defaults to `bundled-<out>`).
+go-modules = ["vendor/github.com/foo/bar"]
+# Optional: vendor Cargo projects. Each entry is a path to a Cargo.toml
+# relative to the source root.
+cargo-projects = ["Cargo.toml"]
 
-# Optional: sources this package uses (from //sources/foo).
-# Each is either a path relative to the project root, or an edo addr.
-[package.source-groups]
-crates = ["hello-agent", "another-crate"]
+# A local directory dropped into the RPM build tree.
+[[package.source]]
+path = "files"
+out = "files"
 
-# Build-dependencies: RPMs that must exist to build this one.
-# In old twoliter these came from Cargo.toml build-dependencies.
-[[package.build-dependency]]
-name = "openssl-devel"
-
-[[package.build-dependency]]
-addr = "//packages/glibc-devel"
-
-# Runtime deps (used by rpm2img during variant build).
-[[package.dependency]]
-name = "systemd"
-
-# Optional: opt into upstream fallback per-package.
-[package.build]
-upstream-source-fallback = true
+# A shared source tree referenced by edo address. Typically points at
+# `//sources/<name>` defined elsewhere in the project.
+[[package.source]]
+addr = "//sources/hello-agent"
+# Optional: other addressed sources that this one vendors from; wired
+# through to the RPM transform as `vendored`.
+vendored = ["//sources/another-crate"]
 ```
 
 ## Fields
 
 ### Required
 
-- `schema-version = "3"`.
-- `[package].name` — the crate name (matches the directory name unless
-  `package-name` is set, in which case that is the RPM's `Name:` field).
+- `schema-version = "3"` — top-level version tag on the outer `Config`
+  enum (`src/config/mod.rs`). All three of `package.toml`, `kit.toml`,
+  and `Twoliter.toml` share this tag; the `[package]` table
+  discriminates.
+- `[package].name` — the package name. Used as the RPM package name and
+  as the address suffix for the emitted transform (`//packages/<name>/rpm`).
 
 ### Optional
 
-- `[package.package-name]` — override for RPM name; needed when the crate
-  name is not a valid RPM name.
-- `[[package.external-files]]` — one entry per upstream tarball. Same schema
-  as `old-twoliter/tools/buildsys/src/manifest.rs::ExternalFile`.
-- `[package.source-groups]` — extra source trees under
-  `sources/<name>/` that this package should watch for rerun-if-changed.
-  Old twoliter had this in `Cargo.toml` metadata.
-- `[[package.build-dependency]]` and `[[package.dependency]]` — either
-  `name` (resolves to `//packages/<name>` locally) or explicit `addr`.
+- `[package].depends` — flat list of package names this package's RPM
+  build depends on. Each `foo` becomes an edge to `//packages/foo/rpm`.
+  The RPM `.spec`'s own `BuildRequires`/`Requires` still drive install
+  semantics; `depends` only shapes the DAG.
+- `[[package.source]]` — zero or more input sources. Untagged
+  enum discriminated by which fields are present:
+  - **URL source** (`url` + `ref` + `out`): fetched via edo's `remote`
+    source. `ref` is the SHA-512 (or whatever digest edo's `remote`
+    accepts). `out` is the filename dropped into `SOURCES/`.
+    Short-circuited by the `[lookaside]` cache in `Twoliter.toml` when
+    configured.
+  - **Local source** (`path` + `out`): a directory checked into the
+    project. `path` is relative to the package directory; `out` is where
+    it lands in the RPM build tree.
+  - **Addressed source** (`addr` + optional `vendored`): a reference to
+    an edo address defined elsewhere (typically `//sources/<name>`).
+    `vendored` lists sibling addresses that this source vendors from and
+    is forwarded to the RPM transform.
+- `go-modules` / `cargo-projects` on URL and local sources — trigger a
+  `go-vendor` or `cargo-vendor` transform against that source. The
+  vendored artifact is fed into the RPM transform as `bundled-<name>`.
 
-## Loading
+## Emitted schema
 
-`src/config/package.rs::Package` handles a minimal case today. Extending it:
+`Package::to_edo` (in `src/config/package.rs`) produces, under
+`//packages/<name>/`:
 
-1. Deserialize.
-2. For each `external-files` entry, produce a `lookaside` source node at
-   `//packages/<pkg>/external/<sha512-slug>`.
-3. For each build-dep, add an `edges` entry in the emitted schema.
-4. Emit the `rpm` transform node.
+1. `package-src` — a `local` source pointing at the package directory
+   (contains the `.spec` file and any adjacent files).
+2. For each `[[package.source]]`:
+   - `src-<i>` — a `remote` (URL), `local` (path), or address reference.
+   - `src-<i>-go-vendored-<j>` — one `go-vendor` transform per
+     `go-modules` entry, running under `//sdk-open`.
+   - `src-<i>-cargo-vendored` — one `cargo-vendor` transform if
+     `cargo-projects` is non-empty, running under `//sdk-open`.
+3. `rpm` — the `rpm` transform running under `//sdk-isolated`, wired to:
+   - `sources`: package dir + every local/addressed source.
+   - `archives`: every URL source.
+   - Config: `package` name, `depends` (as `//packages/<name>/rpm`
+     edges), `vendored` addresses, `bundled` map.
+
+## Design notes
+
+- **No dedicated `lookaside` source kind.** External upstream tarballs
+  are just `url`-style sources. The S3 lookaside cache is a
+  `[cache.source.lookaside]` element seeded by `[lookaside]` in
+  `Twoliter.toml` — see [`../sources/lookaside.md`](../sources/lookaside.md).
+- **No `force-upstream` / `upstream-source-fallback`.** Edo always falls
+  through to the upstream URL on cache miss; the old buildsys toggles
+  are not ported.
+- **No build-vs-runtime dep split.** `depends` shapes the DAG only.
+  Install-time `Requires` come from the RPM spec file itself.
+- **No `variant-sensitive` / `package-features`.** Old buildsys
+  hard-failed on both; the new schema drops them.
 
 ## Old-code references
 
 - `old-twoliter/tools/buildsys/src/manifest.rs::Manifest`,
-  `BuildPackage`, `ExternalFile`, `BundleModule` — the reference schema.
-- `old-twoliter/tests/projects/local-kit/packages/pkg-a-1.27/Cargo.toml` —
-  an example of the old Cargo.toml-based schema; new schema replaces this
-  file with `package.toml`.
-
-## Open questions
-
-- Should we keep supporting `Cargo.toml`-embedded metadata alongside
-  `package.toml`, for a transition period? Recommendation: no, keep the
-  schemas separate. `Cargo.toml` under `packages/*` continues to exist for
-  the crate-level dep graph, but twoliter reads `package.toml` for build
-  metadata. This is cleaner and closer to how `kit.toml` already works.
-- Do we still need `package.build-package.variant-sensitive` /
-  `package-features`? Old buildsys hard-fails on both; new twoliter drops
-  them entirely.
+  `BuildPackage`, `ExternalFile`, `BundleModule` — the pre-migration
+  reference schema (embedded in `Cargo.toml`).
+- `old-twoliter/tools/buildsys/src/cache.rs::LookasideCache` — old
+  external-file fetch logic, now subsumed by edo's `remote` source plus
+  the `[lookaside]` S3 cache.
