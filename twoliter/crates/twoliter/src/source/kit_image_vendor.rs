@@ -350,7 +350,11 @@ fn is_rate_limited(err: &ocilot::error::Error) -> bool {
         _ => None,
     };
     response
-        .map(|r| r.errors.iter().any(|e| matches!(e.code, ErrorCode::TooManyRequests)))
+        .map(|r| {
+            r.errors
+                .iter()
+                .any(|e| matches!(e.code, ErrorCode::TooManyRequests))
+        })
         .unwrap_or(false)
 }
 

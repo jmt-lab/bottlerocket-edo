@@ -5,7 +5,6 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-
 /// Top-level `[project]` table of a `Twoliter.toml`.
 ///
 /// Every project must declare its SDK (`[sdk]`) and at least one vendor
@@ -140,10 +139,7 @@ impl Twoliter {
                 Element::builder()
                     .addr(sdk_vendor_addr)
                     .kind("image")
-                    .config(BTreeMap::from([(
-                        "uri".to_string(),
-                        json!(&spec.registry),
-                    )]))
+                    .config(BTreeMap::from([("uri".to_string(), json!(&spec.registry))]))
                     .build(),
             );
         }
@@ -279,9 +275,7 @@ impl Twoliter {
         //    because `Schema::add_source_cache` is or-insert.
         if let Some(lookaside) = self.lookaside.as_ref() {
             let lookaside_cache_addr = Addr::parse("//edo-source-cache/lookaside")?;
-            let mut config = BTreeMap::from([
-                ("bucket".to_string(), json!(&lookaside.bucket)),
-            ]);
+            let mut config = BTreeMap::from([("bucket".to_string(), json!(&lookaside.bucket))]);
             if let Some(prefix) = lookaside.prefix.as_ref() {
                 config.insert("prefix".to_string(), json!(prefix));
             }
@@ -336,11 +330,7 @@ version = "=0.1.0"
 "#,
         );
         let schema = cfg.to_edo().expect("to_edo");
-        let requires: Vec<_> = schema
-            .requires()
-            .keys()
-            .map(|a| a.to_string())
-            .collect();
+        let requires: Vec<_> = schema.requires().keys().map(|a| a.to_string()).collect();
         assert!(requires.contains(&"//bottlerocket-sdk".to_string()));
         assert!(requires.contains(&"//kits/bottlerocket/core-kit".to_string()));
         assert!(requires.contains(&"//kits/my-vendor/extra-kit".to_string()));
@@ -359,10 +349,7 @@ version = "=0.1.0"
             .expect("bottlerocket-sdk vendor emitted");
         assert_eq!(sdk_vendor_elem.kind, "image");
         assert_eq!(
-            sdk_vendor_elem
-                .config
-                .get("uri")
-                .and_then(|v| v.as_str()),
+            sdk_vendor_elem.config.get("uri").and_then(|v| v.as_str()),
             Some("public.ecr.aws/bottlerocket")
         );
         // The kit-image vendor element carries the original kind.
@@ -447,7 +434,10 @@ registry = "example.com/foo-sdk"
         );
         let err = cfg.to_edo().expect_err("should fail");
         let msg = err.to_string();
-        assert!(msg.contains("foo-sdk"), "error should name the collision: {msg}");
+        assert!(
+            msg.contains("foo-sdk"),
+            "error should name the collision: {msg}"
+        );
     }
 
     #[test]
@@ -635,9 +625,7 @@ registry = "public.ecr.aws/bottlerocket"
             .get("bottlerocket")
             .expect("bottlerocket config table emitted");
         assert_eq!(
-            bottlerocket
-                .get("release-version")
-                .and_then(|v| v.as_str()),
+            bottlerocket.get("release-version").and_then(|v| v.as_str()),
             Some("v1.42.0")
         );
     }
@@ -690,9 +678,7 @@ pub mod error {
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub))]
     pub enum Error {
-        #[snafu(display(
-            "Twoliter.toml must declare at least one `[vendor.<name>]` table"
-        ))]
+        #[snafu(display("Twoliter.toml must declare at least one `[vendor.<name>]` table"))]
         NoVendors,
         #[snafu(display(
             "sdk `{sdk}` references unknown vendor `{vendor}`; add a `[vendor.{vendor}]` table"
@@ -720,4 +706,3 @@ pub mod error {
         }
     }
 }
-

@@ -1,37 +1,11 @@
-[package]
-name = "twoliter"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["crates/twoliter", "crates/br-image"]
+resolver = "2"
 
-[dependencies]
-astral-tokio-tar = "0.6"
-async-compression = "0.4"
-async-trait = "0.1"
-base16 = "0.2"
-base64 = "0.22.1"
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-edo = { git = "https://github.com/awslabs/edo", branch = "develop" }
-edo-core = { git = "https://github.com/awslabs/edo", branch = "develop" }
-futures = "0.3"
-indexmap = "2.14"
-jiff = { version = "0.2", features = ["serde"] }
-nutype = { version = "0.5", features = ["regex", "serde"] }
-ocilot = "0.2"
-regex = "1"
-rpm = { version = "0.18", default-features = false }
-semver = "1.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
+[workspace.dependencies]
+# Shared error-handling library. Pinned here so `crates/twoliter` and
+# `crates/br-image` cannot drift onto incompatible snafu versions.
 snafu = "0.9"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
-toml = "0.9"
-tracing = "0.1"
-
-[dev-dependencies]
-test-case = "3"
 
 [patch."https://github.com/awslabs/edo"]
 edo = { path = "../../edo/crates/edo" }

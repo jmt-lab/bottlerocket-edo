@@ -141,8 +141,7 @@ impl TwoliterOverride {
             for suffix in ["", "-sdk"] {
                 let addr = Addr::parse(&format!("//vendor/{name}{suffix}"))?;
                 if let Some(elem) = schema.vendor_mut(&addr) {
-                    elem.config
-                        .insert("uri".to_string(), json!(&spec.registry));
+                    elem.config.insert("uri".to_string(), json!(&spec.registry));
                 }
             }
         }
@@ -166,11 +165,12 @@ impl TwoliterOverride {
                     vendor: ko.vendor.clone(),
                 }
             );
-            let vendor_spec = base.vendor.get(&ko.vendor).ok_or_else(|| {
-                error::Error::UnknownVendor {
-                    name: ko.vendor.clone(),
-                }
-            })?;
+            let vendor_spec =
+                base.vendor
+                    .get(&ko.vendor)
+                    .ok_or_else(|| error::Error::UnknownVendor {
+                        name: ko.vendor.clone(),
+                    })?;
             // Registry the base would use, unless a `[vendor.<name>]`
             // override in this same file already redirected it.
             let effective_registry = self
@@ -199,11 +199,12 @@ impl TwoliterOverride {
                     want_vendor: base.sdk.vendor.clone(),
                 }
             );
-            let vendor_spec = base.vendor.get(&sdk_ov.vendor).ok_or_else(|| {
-                error::Error::UnknownVendor {
-                    name: sdk_ov.vendor.clone(),
-                }
-            })?;
+            let vendor_spec =
+                base.vendor
+                    .get(&sdk_ov.vendor)
+                    .ok_or_else(|| error::Error::UnknownVendor {
+                        name: sdk_ov.vendor.clone(),
+                    })?;
             let effective_registry = self
                 .vendor
                 .get(&sdk_ov.vendor)
@@ -251,7 +252,12 @@ fn build_override_source(
     registry: &str,
 ) -> ContextResult<Element> {
     if let Some(digest) = ko.digest.as_ref() {
-        let uri = format!("{}/{}:v{}", registry.trim_end_matches('/'), ko.name, ko.version);
+        let uri = format!(
+            "{}/{}:v{}",
+            registry.trim_end_matches('/'),
+            ko.name,
+            ko.version
+        );
         let normalized_ref = digest.strip_prefix("sha256:").unwrap_or(digest).to_string();
         Ok(Element::builder()
             .addr(addr.clone())
@@ -296,9 +302,7 @@ pub mod error {
             "{target}: must set exactly one of `digest` or `local-path`, got neither"
         ))]
         OverrideMissingSource { target: String },
-        #[snafu(display(
-            "{target}: must set exactly one of `digest` or `local-path`, got both"
-        ))]
+        #[snafu(display("{target}: must set exactly one of `digest` or `local-path`, got both"))]
         OverrideConflictingSource { target: String },
         #[snafu(display(
             "sdk-override targets `{got_vendor}/{got_name}` but the base SDK is \
@@ -597,10 +601,7 @@ digest = "sha256:second"
         ov.merge(later);
         assert_eq!(ov.vendor.get("bottlerocket").unwrap().registry, "second");
         assert_eq!(ov.kit_override.len(), 1);
-        assert_eq!(
-            ov.kit_override[0].digest.as_deref(),
-            Some("sha256:second")
-        );
+        assert_eq!(ov.kit_override[0].digest.as_deref(), Some("sha256:second"));
     }
 
     #[test]

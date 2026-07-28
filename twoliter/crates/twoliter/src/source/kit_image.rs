@@ -151,17 +151,12 @@ impl SourceImpl for KitImageSource {
                 uri: self.uri.clone(),
                 platform: platform.clone(),
             })?;
-        let image_config = image
-            .fetch_config(&uri)
-            .await
-            .context(error::OciSnafu)?;
-        let label = image_config
-            .config
-            .labels
-            .get(KIT_METADATA_LABEL)
-            .context(error::MissingMetadataSnafu {
+        let image_config = image.fetch_config(&uri).await.context(error::OciSnafu)?;
+        let label = image_config.config.labels.get(KIT_METADATA_LABEL).context(
+            error::MissingMetadataSnafu {
                 uri: self.uri.clone(),
-            })?;
+            },
+        )?;
         let metadata = KitMetadata::from_label(label)?;
 
         // Materialize a single OCI layer holding the whole archive,
@@ -242,9 +237,7 @@ pub mod error {
             crate::source::kit_image::KIT_METADATA_LABEL
         ))]
         MissingMetadata { uri: String },
-        #[snafu(display(
-            "kit image at {uri} has no manifest for platform {platform}"
-        ))]
+        #[snafu(display("kit image at {uri} has no manifest for platform {platform}"))]
         MissingImage { uri: String, platform: Platform },
         #[snafu(display("kit metadata label is not valid base64: {source}"))]
         MetadataBase64 { source: base64::DecodeError },
@@ -253,9 +246,7 @@ pub mod error {
         #[snafu(display("failed to serialize kit metadata document: {source}"))]
         MetadataEncode { source: serde_json::Error },
         #[snafu(transparent)]
-        Storage {
-            source: edo::storage::StorageError,
-        },
+        Storage { source: edo::storage::StorageError },
     }
 
     impl From<Error> for SourceError {

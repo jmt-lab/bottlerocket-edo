@@ -27,15 +27,11 @@ pub fn register(ctx: &Context) {
     );
     registry.register_source(
         "kit-image",
-        Arc::new(async |element, ctx| {
-            Ok(Source::new(KitImageSource::new(&element, &ctx).await?))
-        }),
+        Arc::new(async |element, ctx| Ok(Source::new(KitImageSource::new(&element, &ctx).await?))),
     );
     registry.register_vendor(
         "kit-image",
-        Arc::new(async |element, ctx| {
-            Ok(Vendor::new(KitImageVendor::new(&element, &ctx).await?))
-        }),
+        Arc::new(async |element, ctx| Ok(Vendor::new(KitImageVendor::new(&element, &ctx).await?))),
     );
     // registry.register_transform("advisory-check", Arc::new(async |addr, node, ctx| {
     //     Ok(Transform::new(AdvisoryCheckTransform::new(&addr, &node, &ctx).await?))

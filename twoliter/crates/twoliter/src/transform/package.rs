@@ -23,7 +23,10 @@ use tracing::trace;
 /// in `%files` (e.g. kernel-devel subpackages that `chgrp builder` some files)
 /// into hard `Requires`. Building this tiny package and adding it to the local
 /// repo satisfies that requirement without shipping anything.
-const BUILDER_GROUP_SPEC: &str = include_str!("builder-group.spec");
+///
+/// Sourced from `br-image` so `crates/br-image/data/builder-group.spec` is
+/// the single point of truth.
+const BUILDER_GROUP_SPEC: &str = br_image::BUILDER_GROUP_SPEC;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct PackageBuildOptions {

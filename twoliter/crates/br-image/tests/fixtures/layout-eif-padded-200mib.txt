@@ -1,0 +1,2 @@
+ROOT-A     offset=     1  size=   193
+HASH-A     offset=   194  size=     5

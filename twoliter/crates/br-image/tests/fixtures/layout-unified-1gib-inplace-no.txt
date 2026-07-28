@@ -1,0 +1,8 @@
+BIOS       offset=     1  size=     4
+EFI-A      offset=     5  size=    10
+BOOT-A     offset=    15  size=    40
+ROOT-A     offset=    55  size=   920
+HASH-A     offset=   975  size=    10
+RESERVED-A offset=   985  size=    20
+PRIVATE    offset=  1005  size=    17
+DATA-A     offset=  1022  size=  1024

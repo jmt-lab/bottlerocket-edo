@@ -12,10 +12,10 @@ use std::collections::{BTreeMap, HashMap};
 
 pub use build::*;
 pub use checkout::*;
-pub use fetch::*;
 use edo::context::Element;
 use edo::context::{Addr, Context, LogVerbosity};
 use edo_core::register_core;
+pub use fetch::*;
 pub use list::*;
 pub use prune::*;
 pub use publish::*;
@@ -77,12 +77,9 @@ pub async fn create_context(
     )
     .await?;
     // Now load the current project using the woliter specific configuration module
-    let mut project = twoliter::config::Config::load(
-        ctx.project_dir(),
-        &args.overrides,
-        &args.vendor_overrides,
-    )
-    .await?;
+    let mut project =
+        twoliter::config::Config::load(ctx.project_dir(), &args.overrides, &args.vendor_overrides)
+            .await?;
     project.build(&ctx, locked).await?;
     Ok(ctx)
 }
