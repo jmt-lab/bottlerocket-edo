@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use edo::context::{Addr, ContextResult, Element, Requirement, Schema, SourceMap};
-use semver::VersionReq;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -13,6 +13,12 @@ use serde_json::json;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Twoliter {
+    /// Project-wide "image version" stamp. Emitted into the schema's
+    /// top-level `[bottlerocket]` config as `release-version = "v<X.Y.Z>"`,
+    /// where the RPM package transform picks it up to build the dist tag
+    /// (see `src/transform/package.rs`). Corresponds to the
+    /// `BUILDSYS_VERSION_IMAGE` variable in old twoliter.
+    pub release_version: Version,
     /// The SDK the project builds against.
     pub sdk: SdkSpec,
     /// The set of OCI registries this project may pull kits from,
@@ -228,10 +234,28 @@ impl Twoliter {
         //    overlay wins because `Schema::add_source_cache` is
         //    or-insert.
         let cache_addr = Addr::parse("//edo-source-cache/kit-image")?;
+
+        // 5a. Project-wide `[bottlerocket]` config. Carries the
+        //     project's `release-version` (formatted `v<X.Y.Z>` to match
+        //     the kit-level stamp emitted by `Kit::to_edo()`) so the RPM
+        //     package transform's dist-tag builder in
+        //     `src/transform/package.rs` picks it up. Note: `Schema::merge`
+        //     is last-write-wins over the config table, so a kit's
+        //     per-kit `release-version` merged in later will override
+        //     this project-level default. That's the same policy as
+        //     old-twoliter and is intentional for now.
+        let project_config = BTreeMap::from([(
+            "bottlerocket".to_string(),
+            json!({
+                "release-version": format!("v{}", self.release_version),
+            }),
+        )]);
+
         let mut schema = Schema::builder()
             .vendor(vendors)
             .requires(requires)
             .environment(environments)
+            .config(project_config)
             .build();
         schema.add_source_cache(
             "kit-image",
@@ -287,6 +311,8 @@ mod tests {
     fn parses_full_example_and_emits_expected_addresses() {
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -374,6 +400,8 @@ version = "=0.1.0"
         // image vendor at distinct addresses, with no collision.
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -403,6 +431,8 @@ version = "=1.42.0"
         // address for `foo-sdk`. Surface a clear error.
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "foo"
@@ -424,6 +454,8 @@ registry = "example.com/foo-sdk"
     fn rejects_kit_referencing_unknown_vendor() {
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -447,6 +479,8 @@ version = "=0.1.0"
     fn rejects_missing_vendor_table() {
         let err: Result<Twoliter, _> = toml::from_str(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -465,6 +499,8 @@ version = "=0.76.0"
         // and forwards the bucket into the element config.
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -500,6 +536,8 @@ bucket = "b"
         // define one without collision.
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -522,6 +560,8 @@ registry = "public.ecr.aws/bottlerocket"
         // config so `S3BackendOptions` can deserialize them.
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
@@ -555,6 +595,8 @@ prefix = "cache"
     fn rejects_sdk_referencing_unknown_vendor() {
         let cfg = parse(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "ghost"
@@ -566,6 +608,79 @@ registry = "public.ecr.aws/bottlerocket"
         );
         let err = cfg.to_edo().expect_err("should fail");
         assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn release_version_reaches_schema_bottlerocket_config() {
+        // A valid `release-version` at the project level flows into the
+        // schema's top-level `[bottlerocket]` config as `v<X.Y.Z>`, the
+        // same format the RPM package transform in
+        // `src/transform/package.rs` expects for its dist-tag stamp.
+        let cfg = parse(
+            r#"
+release-version = "1.42.0"
+
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+"#,
+        );
+        let schema = cfg.to_edo().expect("to_edo");
+        let bottlerocket = schema
+            .get_config()
+            .get("bottlerocket")
+            .expect("bottlerocket config table emitted");
+        assert_eq!(
+            bottlerocket
+                .get("release-version")
+                .and_then(|v| v.as_str()),
+            Some("v1.42.0")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_release_version() {
+        // `release-version` has no `serde(default)`, so an omitted value
+        // must fail deserialization rather than defaulting silently.
+        let err: Result<Twoliter, _> = toml::from_str(
+            r#"
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+"#,
+        );
+        assert!(err.is_err(), "missing release-version should fail to parse");
+    }
+
+    #[test]
+    fn rejects_malformed_release_version() {
+        // Non-semver strings must fail deserialization: `release-version`
+        // is typed as `semver::Version`, not a free-form string.
+        let err: Result<Twoliter, _> = toml::from_str(
+            r#"
+release-version = "not-a-version"
+
+[sdk]
+name = "bottlerocket-sdk"
+vendor = "bottlerocket"
+version = "=0.76.0"
+
+[vendor.bottlerocket]
+registry = "public.ecr.aws/bottlerocket"
+"#,
+        );
+        assert!(
+            err.is_err(),
+            "malformed release-version should fail to parse"
+        );
     }
 }
 

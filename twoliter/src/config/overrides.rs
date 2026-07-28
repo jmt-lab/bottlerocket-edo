@@ -330,6 +330,8 @@ mod tests {
     fn base_twoliter() -> Twoliter {
         toml::from_str(
             r#"
+release-version = "1.42.0"
+
 [sdk]
 name = "bottlerocket-sdk"
 vendor = "bottlerocket"
