@@ -33,3 +33,6 @@ tracing = "0.1"
 [dev-dependencies]
 test-case = "3"
 
+[patch."https://github.com/awslabs/edo"]
+edo = { path = "../../edo/crates/edo" }
+edo-core = { path = "../../edo/crates/core" }

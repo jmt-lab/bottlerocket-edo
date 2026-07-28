@@ -1,5 +1,5 @@
 use clap::Parser;
-use cmd::{Checkout, List, Prune, Run, Update};
+use cmd::{Checkout, Fetch, List, Prune, Run, Update};
 use std::{path::PathBuf, str::FromStr};
 
 use crate::cmd::{Build, Publish};
@@ -87,6 +87,7 @@ impl Args {
 enum Commands {
     Build(Build),
     Checkout(Checkout),
+    Fetch(Fetch),
     Run(Run),
     Prune(Prune),
     Publish(Publish),
@@ -102,6 +103,7 @@ async fn main() -> Result<()> {
     match args.clone().command {
         Commands::Build(cmd) => cmd.run(args.clone()).await?,
         Commands::Checkout(cmd) => cmd.run(args.clone()).await?,
+        Commands::Fetch(cmd) => cmd.run(args.clone()).await?,
         Commands::Run(cmd) => cmd.run(args.clone()).await?,
         Commands::Prune(cmd) => cmd.run(args.clone()).await?,
         Commands::Update(cmd) => cmd.run(args.clone()).await?,

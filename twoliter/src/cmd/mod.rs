@@ -1,5 +1,6 @@
 mod build;
 mod checkout;
+mod fetch;
 mod list;
 mod prune;
 mod publish;
@@ -11,6 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 
 pub use build::*;
 pub use checkout::*;
+pub use fetch::*;
 use edo::context::Element;
 use edo::context::{Addr, Context, LogVerbosity};
 use edo_core::register_core;
