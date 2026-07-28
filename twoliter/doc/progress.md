@@ -10,7 +10,7 @@
 - [-] Phase 2
   - [x] image-building
   - [x] buildsys manifest types
-  - [ ] transforms/variant-image
+  - [x] transforms/variant-image
   - [ ] config/variant-toml
   - [ ] cli/build variant
   - [ ] config/mod.rs to walk variants/*/

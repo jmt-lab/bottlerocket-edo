@@ -77,4 +77,10 @@ pub enum Error {
     /// [`Vfs`]: edo::environment::Vfs
     #[snafu(display("unsupported in br-image: {what} (blocked on: {blocker})"))]
     Unsupported { what: String, blocker: String },
+
+    /// A JSON (de)serialization failure. Used by
+    /// [`crate::metadata::VariantManifest::to_json_bytes`] and by any
+    /// other structured-metadata emitter added later.
+    #[snafu(display("json serialization error: {source}"))]
+    Serialization { source: serde_json::Error },
 }

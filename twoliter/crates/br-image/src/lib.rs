@@ -65,9 +65,14 @@ pub const METADATA_SPEC: &str = include_str!("../data/metadata.spec");
 
 pub use compress::ArtifactSuffix;
 pub use error::{Error, Result};
+pub use grub::{GrubUefiInstall, install_grub_uefi};
+pub use image::{StageRootInputs, stage_root};
 pub use layout::{resolved_image_layout, validate_image_features};
+pub use metadata::VariantManifest;
+pub use ovf::{assemble_ova, render_ova_manifest, sha256_of};
 pub use model::{
     Arch, DEFAULT_DATA_IMAGE_SIZE_GIB, DEFAULT_NO_FIRST_PARTY_OS_IMAGE_SIZE_GIB,
     DEFAULT_OS_IMAGE_SIZE_GIB, DEFAULT_PARTITION_PLAN, DEFAULT_PUBLISH_IMAGE_SIZE_HINT_GIB,
     ImageFeature, ImageFeatures, ImageFormat, ImageLayout, ImageSize, PartitionPlan, SupportedArch,
 };
+pub use partition::{apply_partition_layout, render_sgdisk_argv};

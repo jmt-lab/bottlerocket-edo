@@ -7,6 +7,7 @@ description = "Bottlerocket disk-image primitives: partition layout, verity, com
 [dependencies]
 edo = { git = "https://github.com/awslabs/edo", branch = "develop" }
 regex = "1"
+semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_plain = "1"

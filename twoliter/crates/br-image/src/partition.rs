@@ -13,9 +13,13 @@
 //! - EIF sidecar disk: `set_eif_partition_sizes` → [`eif_partition_layout`].
 
 use std::fmt;
+use std::path::Path;
+
+use edo::environment::Vfs;
 
 use crate::error::Error;
 use crate::model::{ImageFeatures, ImageLayout, PartitionPlan};
+use crate::vfs_ext::shell_quote_path;
 
 // -------------------------------------------------------------------
 // Partition-type GUIDs (from `partyplanner` §1).
@@ -676,6 +680,99 @@ pub fn eif_partition_layout(
     Ok(PartitionLayout { entries })
 }
 
+// -------------------------------------------------------------------
+// Disk realization via `sgdisk` / `truncate`.
+//
+// Given a computed [`PartitionLayout`], [`apply_partition_layout`]
+// materializes it on a disk-image file by:
+//   1. Sizing the file with `truncate -s <total>M <disk>`.
+//   2. Wiping any existing GPT with `sgdisk -Z <disk>`.
+//   3. For each partition entry, issuing an `sgdisk -n / -t / -c / -u`
+//      block (order matches the shell's `partyplanner` -> `sgdisk`
+//      argv sequence).
+//
+// The pure argv-rendering helper [`render_sgdisk_argv`] is factored
+// out for unit testing without a live [`Vfs`].
+
+/// Render the argv for a single `sgdisk` invocation that realizes
+/// `layout` on `disk`. Every argument is shell-quoted so callers can
+/// feed the result directly to `vfs.command`, which passes it through
+/// `sh -c`.
+///
+/// The invocation:
+/// - Starts with `-Z` to zap any existing GPT.
+/// - Emits one `-n <n>:<offset>M:+<size>M` block per entry (in the
+///   layout's on-disk order, which [`compute_partition_layout`]
+///   guarantees is monotonic).
+/// - Emits `-t <n>:<typecode>` and `-c <n>:<label>` for every entry
+///   whose accessor returns a value (unlabeled data partitions get no
+///   `-c`; every entry has a typecode).
+/// - Emits `-u <n>:<uuid>` for the data-partition slots (the only
+///   entries with fixed PARTUUIDs).
+///
+/// The `plan` argument determines which PARTUUID each data slot gets
+/// (see [`partition_uuid`]).
+pub fn render_sgdisk_argv(layout: &PartitionLayout, plan: PartitionPlan, disk: &Path) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::with_capacity(layout.entries.len() * 4 + 4);
+    argv.push("-Z".into());
+    for (idx, e) in layout.entries.iter().enumerate() {
+        let n = idx + 1;
+        argv.push("-n".into());
+        argv.push(format!("{n}:{}M:+{}M", e.offset_mib, e.size_mib));
+        argv.push("-t".into());
+        argv.push(format!("{n}:{}", partition_typecode(e.part)));
+        if let Some(label) = partition_label(e.part) {
+            if !label.is_empty() {
+                argv.push("-c".into());
+                argv.push(format!("{n}:{label}"));
+            }
+        }
+        if let Some(uuid) = partition_uuid(e.part, plan) {
+            argv.push("-u".into());
+            argv.push(format!("{n}:{uuid}"));
+        }
+    }
+    argv.push(shell_quote_path(disk));
+    argv
+}
+
+/// Materialize `layout` on `disk` by shelling out to `truncate` and
+/// `sgdisk` through `vfs`.
+///
+/// `total_mib` is the pre-computed total disk size (usually the sum of
+/// GPT overhead + every partition's size). Callers computed the layout
+/// with [`compute_partition_layout`] and should derive `total_mib`
+/// from the layout's last entry offset+size plus [`GPT_MIB`] for the
+/// footer.
+pub async fn apply_partition_layout(
+    vfs: &Vfs,
+    disk: &Path,
+    layout: &PartitionLayout,
+    plan: PartitionPlan,
+    total_mib: u32,
+) -> Result<(), Error> {
+    if layout.entries.is_empty() {
+        return Err(Error::Partition {
+            plan: format!("{plan:?}"),
+            feature: "apply_partition_layout".into(),
+            reason: "empty layout".into(),
+        });
+    }
+    let disk_q = shell_quote_path(disk);
+    let size_arg = format!("{total_mib}M");
+    vfs.command(
+        "truncate_disk",
+        "truncate",
+        &["-s", size_arg.as_str(), disk_q.as_str()],
+    )
+    .await?;
+
+    let argv = render_sgdisk_argv(layout, plan, disk);
+    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    vfs.command("sgdisk_apply", "sgdisk", &argv_refs).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,6 +959,77 @@ mod tests {
             Some(BOTTLEROCKET_DATA_FALLBACK_PARTGUID)
         );
         assert_eq!(partition_uuid(Part::RootA, PartitionPlan::Split), None);
+    }
+
+    #[test]
+    fn render_sgdisk_argv_starts_with_zap_and_ends_with_disk_path() {
+        // Small, deterministic layout: BIOS + ROOT-A.
+        let layout = PartitionLayout {
+            entries: vec![
+                PartitionEntry {
+                    part: Part::Bios,
+                    offset_mib: 1,
+                    size_mib: BIOS_MIB,
+                },
+                PartitionEntry {
+                    part: Part::RootA,
+                    offset_mib: 5,
+                    size_mib: 100,
+                },
+            ],
+        };
+        let argv =
+            render_sgdisk_argv(&layout, PartitionPlan::Unified, Path::new("/tmp/os.img"));
+        assert_eq!(argv[0], "-Z");
+        assert!(argv.last().unwrap().contains("/tmp/os.img"));
+        // Two entries -> at least two `-n` flags.
+        let n_count = argv.iter().filter(|a| a.as_str() == "-n").count();
+        assert_eq!(n_count, 2, "argv={argv:?}");
+        // Every partition gets a typecode.
+        let t_count = argv.iter().filter(|a| a.as_str() == "-t").count();
+        assert_eq!(t_count, 2, "argv={argv:?}");
+    }
+
+    #[test]
+    fn render_sgdisk_argv_places_uuid_only_on_data_partitions() {
+        let layout = PartitionLayout {
+            entries: vec![
+                PartitionEntry {
+                    part: Part::RootA,
+                    offset_mib: 1,
+                    size_mib: 10,
+                },
+                PartitionEntry {
+                    part: Part::DataA,
+                    offset_mib: 11,
+                    size_mib: 10,
+                },
+            ],
+        };
+        let argv = render_sgdisk_argv(&layout, PartitionPlan::Unified, Path::new("/x"));
+        // Exactly one `-u` block, for DATA-A.
+        let u_count = argv.iter().filter(|a| a.as_str() == "-u").count();
+        assert_eq!(u_count, 1);
+        // And it carries the preferred (unified) PARTUUID for DATA-A.
+        let has_pref = argv
+            .iter()
+            .any(|a| a.contains(BOTTLEROCKET_DATA_PREFERRED_PARTGUID));
+        assert!(has_pref, "argv={argv:?}");
+    }
+
+    #[test]
+    fn render_sgdisk_argv_omits_label_for_unlabeled_data() {
+        // Data partitions carry Some("") from partition_label but must
+        // not produce a `-c` flag.
+        let layout = PartitionLayout {
+            entries: vec![PartitionEntry {
+                part: Part::DataA,
+                offset_mib: 1,
+                size_mib: 10,
+            }],
+        };
+        let argv = render_sgdisk_argv(&layout, PartitionPlan::Unified, Path::new("/x"));
+        assert!(!argv.iter().any(|a| a.as_str() == "-c"), "argv={argv:?}");
     }
 
     #[test]

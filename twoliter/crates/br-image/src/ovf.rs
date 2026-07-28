@@ -6,9 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
+use edo::environment::Vfs;
 use regex::Regex;
 
-use crate::error::{Error, Result};
+use snafu::OptionExt;
+
+use crate::error::{Error, InvalidLayoutSnafu, Result};
+use crate::vfs_ext::shell_quote_path;
 
 /// Bytes-per-GiB used to render the disk-size fields in the OVF.
 pub const BYTES_IN_GIB: u64 = 1024 * 1024 * 1024;
@@ -98,20 +102,183 @@ fn leftover_placeholders(text: &str) -> Vec<String> {
     seen
 }
 
-/// Assemble an OVA tarball containing `ovf`, a manifest, and the vmdk(s).
-/// Ports the `tar` invocations in `generate_ova`. Skeleton: the tar
-/// assembly step needs a real `tar` binary or an in-Rust tar writer.
+/// Render the `.mf` manifest text an OVA package contains.
+///
+/// Each `entries` pair is `(referenced_filename, hex_sha256)`; the
+/// output is one `SHA256(<name>)= <hex>\n` line per entry, in the order
+/// given (which must match the `References` section of the OVF per
+/// DSP0243 § OVA manifest). Pure so it can be unit-tested without a
+/// live filesystem.
+pub fn render_ova_manifest(entries: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (name, hex) in entries {
+        out.push_str(&format!("SHA256({name})= {hex}\n"));
+    }
+    out
+}
+
+/// Compute the sha256 of `path` by shelling out to `sha256sum` and
+/// parsing the first whitespace-delimited token from its stdout. The
+/// GNU coreutils format is `<hex>  <path>` — we ignore the path so
+/// this works whether `sha256sum` printed an absolute or relative
+/// name.
+///
+/// Exposed as a helper so [`assemble_ova`] and any future OVA-related
+/// callers do not each need to repeat the parse.
+pub async fn sha256_of(vfs: &Vfs, path: &Path) -> Result<String> {
+    let path_q = shell_quote_path(path);
+    let stdout = vfs.output("ova_sha256", "sha256sum", &[path_q.as_str()]).await?;
+    let text = String::from_utf8_lossy(&stdout);
+    let first = text.split_whitespace().next().ok_or_else(|| Error::ParseOutput {
+        tool: "sha256sum".into(),
+        reason: format!("empty output for {}", path.display()),
+    })?;
+    if first.len() != 64 || !first.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::ParseOutput {
+            tool: "sha256sum".into(),
+            reason: format!("unexpected token {first:?} for {}", path.display()),
+        });
+    }
+    Ok(first.to_string())
+}
+
+/// Assemble an OVA tarball. Ports the `tar` block at
+/// `old-twoliter/twoliter/embedded/imghelper::generate_ova` L755-790.
+///
+/// The OVA is a plain tar file with three or four members, in this
+/// specific order (per DSP0243 § "OVA File Format"): the OVF, the
+/// manifest (`.mf`), then each referenced disk file in the same order
+/// the OVF's `References` section names them.
+///
+/// - `ovf`: absolute path to the already-rendered OVF *inside* `vfs`.
+///   Its directory is the "OVF dir".
+/// - `output_dir`: directory containing `os_vmdk` and (if present)
+///   `data_vmdk`. Usually the transform's `out/` dir.
+/// - `os_vmdk` / `data_vmdk`: filenames or absolute paths of the vmdks
+///   as they appear in `output_dir`.
+/// - `ova_output`: final `.ova` file path.
+///
+/// Returns the OVA path on success.
 pub async fn assemble_ova(
-    _output_dir: &Path,
-    _os_vmdk: &Path,
-    _data_vmdk: Option<&Path>,
-    _rendered_ovf: &str,
-    _ova_output: &Path,
+    vfs: &Vfs,
+    output_dir: &Path,
+    os_vmdk: &Path,
+    data_vmdk: Option<&Path>,
+    ovf: &Path,
+    ova_output: &Path,
 ) -> Result<PathBuf> {
-    Err(Error::InvalidLayout {
-        context: "assemble_ova".into(),
-        reason: "not implemented in br-image; call from the variant-image transform driver".into(),
-    })
+    // File names (leaf only) — used verbatim in the manifest and as
+    // `tar -C <dir> <name>` args.
+    let ovf_dir = ovf
+        .parent()
+        .ok_or_else(|| Error::InvalidLayout {
+            context: "assemble_ova".into(),
+            reason: format!("ovf path {} has no parent directory", ovf.display()),
+        })?;
+    let ovf_name = leaf_name(ovf, "ovf")?;
+    let os_vmdk_name = leaf_name(os_vmdk, "os_vmdk")?;
+    let data_vmdk_name = match data_vmdk {
+        Some(p) => Some(leaf_name(p, "data_vmdk")?),
+        None => None,
+    };
+
+    // 1. Compute sha256 for each referenced file. Order matches
+    //    DSP0243: OVF first, then every file appearing in `References`
+    //    (OS disk, then data disk).
+    let os_sha = sha256_of(vfs, &output_dir.join(&os_vmdk_name)).await?;
+    let data_sha = match &data_vmdk_name {
+        Some(name) => Some(sha256_of(vfs, &output_dir.join(name)).await?),
+        None => None,
+    };
+    let ovf_sha = sha256_of(vfs, ovf).await?;
+
+    // 2. Build the manifest text and write it next to the OVF.
+    let mut manifest_entries: Vec<(String, String)> = Vec::with_capacity(4);
+    manifest_entries.push((os_vmdk_name.clone(), os_sha));
+    if let (Some(name), Some(hex)) = (&data_vmdk_name, &data_sha) {
+        manifest_entries.push((name.clone(), hex.clone()));
+    }
+    manifest_entries.push((ovf_name.clone(), ovf_sha));
+    let manifest_text = render_ova_manifest(&manifest_entries);
+    let manifest_name = format!(
+        "{}.mf",
+        std::path::Path::new(&ovf_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("bottlerocket")
+    );
+    let manifest_path = ovf_dir.join(&manifest_name);
+    vfs.write(&manifest_path, manifest_text.as_bytes()).await?;
+
+    // 3. tar -cvf <ova> -C <ovf_dir> <ovf> <mf>
+    let ova_q = shell_quote_path(ova_output);
+    let ovf_dir_q = shell_quote_path(ovf_dir);
+    let output_dir_q = shell_quote_path(output_dir);
+    let ovf_name_q = crate::vfs_ext::shell_quote(&ovf_name);
+    let manifest_name_q = crate::vfs_ext::shell_quote(&manifest_name);
+    vfs.command(
+        "ova_tar_create",
+        "tar",
+        &[
+            "-cvf",
+            ova_q.as_str(),
+            "-C",
+            ovf_dir_q.as_str(),
+            ovf_name_q.as_str(),
+            manifest_name_q.as_str(),
+        ],
+    )
+    .await?;
+
+    // 4. tar -rvf <ova> -C <output_dir> <os_vmdk>
+    let os_vmdk_q = crate::vfs_ext::shell_quote(&os_vmdk_name);
+    vfs.command(
+        "ova_tar_append_os",
+        "tar",
+        &[
+            "-rvf",
+            ova_q.as_str(),
+            "-C",
+            output_dir_q.as_str(),
+            os_vmdk_q.as_str(),
+        ],
+    )
+    .await?;
+
+    // 5. tar -rvf <ova> -C <output_dir> <data_vmdk> — split plan only.
+    if let Some(name) = data_vmdk_name {
+        let data_q = crate::vfs_ext::shell_quote(&name);
+        vfs.command(
+            "ova_tar_append_data",
+            "tar",
+            &[
+                "-rvf",
+                ova_q.as_str(),
+                "-C",
+                output_dir_q.as_str(),
+                data_q.as_str(),
+            ],
+        )
+        .await?;
+    }
+
+    Ok(ova_output.to_path_buf())
+}
+
+/// Extract the leaf filename of `path` as a UTF-8 String. Fails with
+/// [`Error::InvalidLayout`] when the path has no file name (root, `..`,
+/// etc.) or when the leaf contains non-UTF-8 bytes — both cases would
+/// break the OVA tar's `-C <dir> <name>` construction.
+fn leaf_name(path: &Path, role: &str) -> Result<String> {
+    let os_name = path.file_name().context(InvalidLayoutSnafu {
+        context: "assemble_ova".to_string(),
+        reason: format!("{role} path {} has no filename component", path.display()),
+    })?;
+    let s = os_name.to_str().context(InvalidLayoutSnafu {
+        context: "assemble_ova".to_string(),
+        reason: format!("{role} filename is not valid UTF-8: {}", path.display()),
+    })?;
+    Ok(s.to_string())
 }
 
 #[cfg(test)]
@@ -201,5 +368,50 @@ mod tests {
         let text = "{{FOO}} then {{FOO}} then {{BAR}}";
         let out = leftover_placeholders(text);
         assert_eq!(out, vec!["{{FOO}}", "{{BAR}}"]);
+    }
+
+    #[test]
+    fn render_ova_manifest_matches_shell_layout() {
+        // The old imghelper writes lines like
+        //   SHA256(os.vmdk)= <hex>
+        //   SHA256(data.vmdk)= <hex>
+        //   SHA256(bottlerocket.ovf)= <hex>
+        // in exactly that order. Assert on the raw bytes.
+        let entries = vec![
+            ("bottlerocket-vmware-k8s.vmdk".to_string(), "aa".repeat(32)),
+            ("bottlerocket-vmware-k8s-data.vmdk".to_string(), "bb".repeat(32)),
+            ("bottlerocket-vmware-k8s.ovf".to_string(), "cc".repeat(32)),
+        ];
+        let text = render_ova_manifest(&entries);
+        let expected = format!(
+            "SHA256(bottlerocket-vmware-k8s.vmdk)= {aa}\n\
+             SHA256(bottlerocket-vmware-k8s-data.vmdk)= {bb}\n\
+             SHA256(bottlerocket-vmware-k8s.ovf)= {cc}\n",
+            aa = "aa".repeat(32),
+            bb = "bb".repeat(32),
+            cc = "cc".repeat(32),
+        );
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn render_ova_manifest_empty_input_produces_empty_string() {
+        assert_eq!(render_ova_manifest(&[]), "");
+    }
+
+    #[test]
+    fn render_ova_manifest_preserves_entry_order() {
+        // Reordering entries produces a different manifest — the OVA
+        // spec requires the manifest match the OVF's References order
+        // exactly, so this is load-bearing.
+        let a = vec![
+            ("a".to_string(), "1".repeat(64)),
+            ("b".to_string(), "2".repeat(64)),
+        ];
+        let b = vec![
+            ("b".to_string(), "2".repeat(64)),
+            ("a".to_string(), "1".repeat(64)),
+        ];
+        assert_ne!(render_ova_manifest(&a), render_ova_manifest(&b));
     }
 }

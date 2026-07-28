@@ -326,6 +326,64 @@ pub async fn install_tuf_root(vfs: &Vfs, root: &Path, source_json: &Path) -> Res
     Ok(dst)
 }
 
+/// Inputs for [`stage_root`]. Every optional field defaults to `None`,
+/// which the coordinator treats as "skip this step".
+///
+/// Fields that are `Some(_)` must reference paths that already exist
+/// inside the [`Vfs`]; the underlying primitives will surface the
+/// error otherwise.
+#[derive(Debug, Clone)]
+pub struct StageRootInputs<'a> {
+    /// The rootfs mount point that RPMs will install into.
+    pub root_mount: &'a Path,
+    /// Directory containing every `*.rpm` to install.
+    pub package_dir: &'a Path,
+    /// Optional CA-bundle PEM to install as
+    /// `usr/share/factory/etc/pki/tls/certs/ca-bundle.crt`.
+    pub ca_bundle: Option<&'a Path>,
+    /// Optional TUF root JSON to install as `usr/share/updog/root.json`.
+    pub tuf_root: Option<&'a Path>,
+    /// Optional `file_contexts` file for SELinux labeling. When
+    /// provided, [`crate::selinux::compute_labels`] runs and the
+    /// resulting labels are computed but not applied — see
+    /// [`crate::selinux::build_ea_set_script`] for why applying the
+    /// labels requires a stdin-piping primitive `Vfs` does not yet
+    /// expose. This function still runs the compute step so a real
+    /// `setfiles` error surfaces at build time instead of at first
+    /// boot.
+    pub selinux_file_contexts: Option<&'a Path>,
+}
+
+/// Coordinator for the "install the rootfs, then decorate it" phase
+/// of `rpm2img::stage_images`.
+///
+/// Runs, in order:
+///   1. [`crate::rpm_install::install_rpms`] against `root_mount`.
+///   2. [`install_ca_certs`] when `ca_bundle` is `Some`.
+///   3. [`install_tuf_root`] when `tuf_root` is `Some`.
+///   4. [`crate::selinux::compute_labels`] when
+///      `selinux_file_contexts` is `Some`.
+///
+/// Each step is a call into an already-tested primitive; this function
+/// is orchestration only. The chosen order matches the sequence
+/// documented in `doc/transforms/variant-image.md::Algorithm` (step
+/// `d`): install → decorate → relabel.
+pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
+    crate::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir).await?;
+    if let Some(bundle) = inputs.ca_bundle {
+        install_ca_certs(vfs, inputs.root_mount, bundle).await?;
+    }
+    if let Some(root_json) = inputs.tuf_root {
+        install_tuf_root(vfs, inputs.root_mount, root_json).await?;
+    }
+    if let Some(contexts) = inputs.selinux_file_contexts {
+        // The bytes are computed but not applied — see doc-comment on
+        // StageRootInputs.selinux_file_contexts for the reason.
+        let _ = crate::selinux::compute_labels(vfs, inputs.root_mount, contexts).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
