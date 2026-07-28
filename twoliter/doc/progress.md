@@ -3,8 +3,8 @@
   - [x] sources/sdk-image.md
   - [x] sources/lookaside.md
   - [x] cli/update
-  - [ ] cli/fetch
-  - [ ] config/overrides
+  - [x] cli/fetch
+  - [x] config/overrides
   - [ ] config/twoliter-toml
   - [ ] config/package-toml
 - [ ] Phase 2

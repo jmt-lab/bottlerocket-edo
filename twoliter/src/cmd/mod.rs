@@ -6,7 +6,7 @@ mod prune;
 mod publish;
 mod run;
 mod update;
-mod util;
+pub(crate) mod util;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -77,7 +77,12 @@ pub async fn create_context(
     )
     .await?;
     // Now load the current project using the woliter specific configuration module
-    let mut project = twoliter::config::Config::load(ctx.project_dir()).await?;
+    let mut project = twoliter::config::Config::load(
+        ctx.project_dir(),
+        &args.overrides,
+        &args.vendor_overrides,
+    )
+    .await?;
     project.build(&ctx, locked).await?;
     Ok(ctx)
 }

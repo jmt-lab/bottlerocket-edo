@@ -1,16 +1,27 @@
-use std::{fs::read_dir, path::Path};
+use std::{
+    fs::read_dir,
+    path::{Path, PathBuf},
+};
 
 use edo::context::{Addr, Project, Schema};
 use serde::{Deserialize, Serialize};
 
 mod kit;
+mod overrides;
 mod package;
-mod twoliter;
+pub mod twoliter;
 
 use kit::Kit;
+use overrides::TwoliterOverride;
 use package::Package;
 use snafu::{OptionExt, ResultExt};
 use twoliter::Twoliter;
+
+/// Default filename for the auto-discovered project-root override.
+///
+/// Additional overlay files can be passed via the `--override <path>`
+/// CLI flag and are merged after this file.
+const TWOLITER_OVERRIDE_FILE: &str = "Twoliter.override.toml";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "schema-version")]
@@ -33,11 +44,16 @@ enum Expect {
 }
 
 impl Config {
-    pub async fn load<P: AsRef<Path>>(path: P) -> Result<Project, error::Error> {
+    pub async fn load<P: AsRef<Path>>(
+        path: P,
+        overrides: &[PathBuf],
+        inline_vendor_overrides: &[(String, String)],
+    ) -> Result<Project, error::Error> {
         let path = path.as_ref();
         let mut project = Project::new(path);
         // 1. If this is a twoliter project we should have a project toml
-        let project_schema = Self::twoliter_toml(path)?.context(error::NotProjectSnafu { path })?;
+        let project_schema = Self::twoliter_toml(path, overrides, inline_vendor_overrides)?
+            .context(error::NotProjectSnafu { path })?;
         project.schema_mut().merge(&project_schema);
         // 2. Check if we have a kits/ directory defining we have kits in-project
         let (kit_dir, kit_addr) = (path.join("kits"), Addr::parse("//kits")?);
@@ -79,16 +95,22 @@ impl Config {
         Ok(())
     }
 
-    fn twoliter_toml<P: AsRef<Path>>(path: P) -> Result<Option<Schema>, error::Error> {
+    fn twoliter_toml<P: AsRef<Path>>(
+        path: P,
+        override_paths: &[PathBuf],
+        inline_vendor_overrides: &[(String, String)],
+    ) -> Result<Option<Schema>, error::Error> {
         let twoliter_toml = path.as_ref().join("twoliter.toml");
         if twoliter_toml.try_exists().context(error::IoSnafu)? {
             let toml_schema = std::fs::read_to_string(&twoliter_toml).context(error::IoSnafu)?;
             let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu {
                 path: twoliter_toml.clone(),
             })?;
-            let mut schema = match config {
+            // Keep the parsed `Twoliter` around so overrides can validate
+            // references against the base project definition.
+            let base_project = match config {
                 Config::V1(element) => match element {
-                    ConfigType::Project(project) => Ok(project.to_edo()?),
+                    ConfigType::Project(project) => Ok(project),
                     ConfigType::Package(_) => error::ExpectedSnafu {
                         expected: "project",
                         actual: "package",
@@ -101,6 +123,18 @@ impl Config {
                     .fail(),
                 },
             }?;
+            let mut schema = base_project.to_edo()?;
+
+            // Apply overlay overrides (`Twoliter.override.toml`, `--override
+            // <path>`, `--vendor <name>=<registry>`) before merging the
+            // adjacent `edo.toml`. This ordering lets `edo.toml` remain
+            // the escape hatch of last resort even when overrides are in
+            // effect.
+            let merged_overrides =
+                Self::collect_overrides(path.as_ref(), override_paths, inline_vendor_overrides)?;
+            if !merged_overrides.is_empty() {
+                merged_overrides.apply(&base_project, &mut schema)?;
+            }
 
             // If there is a edo.toml in the path as well merge it in
             if let Some(edo_schema) = Self::edo_toml(path)? {
@@ -116,6 +150,38 @@ impl Config {
         } else {
             Ok(None)
         }
+    }
+
+    /// Compose the effective override set: auto-discovered
+    /// `Twoliter.override.toml`, then each explicit `--override <path>`
+    /// in order, then the inline `--vendor` pairs. Later entries win.
+    fn collect_overrides(
+        project_dir: &Path,
+        override_paths: &[PathBuf],
+        inline_vendor_overrides: &[(String, String)],
+    ) -> Result<TwoliterOverride, error::Error> {
+        let mut merged = TwoliterOverride::default();
+        let auto = project_dir.join(TWOLITER_OVERRIDE_FILE);
+        if auto.try_exists().context(error::IoSnafu)? {
+            merged.merge(Self::read_override_file(&auto)?);
+        }
+        for p in override_paths {
+            if !p.try_exists().context(error::IoSnafu)? {
+                return error::OverrideFileNotFoundSnafu { path: p.clone() }.fail();
+            }
+            merged.merge(Self::read_override_file(p)?);
+        }
+        if !inline_vendor_overrides.is_empty() {
+            merged.merge(TwoliterOverride::from_cli(inline_vendor_overrides));
+        }
+        Ok(merged)
+    }
+
+    fn read_override_file(path: &Path) -> Result<TwoliterOverride, error::Error> {
+        let body = std::fs::read_to_string(path).context(error::IoSnafu)?;
+        toml::from_str(&body).context(error::DeserializeSnafu {
+            path: path.to_path_buf(),
+        })
     }
 
     fn kit_toml<P: AsRef<Path>>(namespace: &Addr, path: P) -> Result<Option<Schema>, error::Error> {
@@ -241,5 +307,7 @@ pub mod error {
             "not a twoliter project, no root level twoliter.toml or edo.toml found at {path:?}"
         ))]
         NotProject { path: PathBuf },
+        #[snafu(display("override file not found: {path:?}"))]
+        OverrideFileNotFound { path: PathBuf },
     }
 }

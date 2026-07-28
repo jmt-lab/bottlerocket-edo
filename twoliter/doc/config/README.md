@@ -9,7 +9,7 @@ here documents the TOML surface that new twoliter reads.
 | [`package-toml.md`](package-toml.md) | `package.rs` (partial). |
 | [`kit-toml.md`](kit-toml.md) | `kit.rs` (partial). |
 | [`variant-toml.md`](variant-toml.md) | Not yet — needs adding. |
-| [`overrides.md`](overrides.md) | Not yet — old `Twoliter.override`. |
+| [`overrides.md`](overrides.md) | `overrides.rs` — `Twoliter.override.toml` overlay + `--override`/`--vendor` flags. |
 | [`edo-toml-merge.md`](edo-toml-merge.md) | `mod.rs::edo_toml` — already implemented. |
 
 Every twoliter node is one of:

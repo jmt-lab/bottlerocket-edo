@@ -59,6 +59,19 @@ pub struct Args {
     /// Defaults to `<storage>/events.jsonl`.
     #[arg(long, default_value = "default")]
     event_log: String,
+    /// Path to a `Twoliter.override.toml` overlay file. Repeatable; later
+    /// files override earlier ones. Merged on top of any
+    /// `Twoliter.override.toml` auto-discovered next to `Twoliter.toml`.
+    #[arg(long = "override", value_name = "PATH")]
+    overrides: Vec<PathBuf>,
+    /// Inline vendor-registry override, `<name>=<registry>`. Repeatable.
+    /// Equivalent to a `[vendor.<name>]` entry in an override file.
+    #[arg(
+        long = "vendor",
+        value_name = "NAME=REGISTRY",
+        value_parser = crate::cmd::util::parse_key_val::<String, String>,
+    )]
+    vendor_overrides: Vec<(String, String)>,
     #[clap(subcommand)]
     command: Commands,
 }
