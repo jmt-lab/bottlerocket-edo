@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::Result;
-use crate::vfs_ext::shell_quote_path;
+use crate::image::error::Result;
+use crate::image::vfs_ext::shell_quote_path;
 
 /// SBOM output format. Bottlerocket emits both.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

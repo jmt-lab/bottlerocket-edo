@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::model::{ImageFormat, PartitionPlan};
+use crate::image::error::{Error, Result};
+use crate::image::model::{ImageFormat, PartitionPlan};
 
 /// Pre-flight checks for a variant-image build. Rejects impossible
 /// combinations before we start shelling out.
@@ -159,8 +159,8 @@ pub async fn mkfs_data_ext4(
     reject_nonempty_debugfs_script(unlabeled_debugfs_script)?;
 
     let size_arg = format!("{size_mib}M");
-    let data_mount_q = crate::vfs_ext::shell_quote_path(data_mount);
-    let scratch_q = crate::vfs_ext::shell_quote_path(scratch_image);
+    let data_mount_q = crate::image::vfs_ext::shell_quote_path(data_mount);
+    let scratch_q = crate::image::vfs_ext::shell_quote_path(scratch_image);
     vfs.command(
         "mkfs_data_ext4",
         "mkfs.ext4",
@@ -221,7 +221,7 @@ pub async fn mkfs_data_xfs(
     // dd parses `key=value` args itself, so quote the entire
     // key=value token to protect the value's metacharacters from the
     // enclosing shell.
-    let of = crate::vfs_ext::shell_quote(&format!("of={}", scratch_image.display()));
+    let of = crate::image::vfs_ext::shell_quote(&format!("of={}", scratch_image.display()));
     let count = format!("count={size_mib}");
     vfs.command(
         "mkfs_data_xfs_zero",
@@ -240,12 +240,12 @@ pub async fn mkfs_root_erofs(
     root_image: &Path,
     selinux_file_contexts: &Path,
 ) -> Result<()> {
-    let fc = crate::vfs_ext::shell_quote(&format!(
+    let fc = crate::image::vfs_ext::shell_quote(&format!(
         "--file-contexts={}",
         selinux_file_contexts.display()
     ));
-    let root_image_q = crate::vfs_ext::shell_quote_path(root_image);
-    let root_mount_q = crate::vfs_ext::shell_quote_path(root_mount);
+    let root_image_q = crate::image::vfs_ext::shell_quote_path(root_image);
+    let root_mount_q = crate::image::vfs_ext::shell_quote_path(root_mount);
     // The shell also passes `-T $(stat -c %Y "$root_mount/root")` — the
     // transform driver is expected to compute the stat and pass it
     // through in a follow-up wrapper.
@@ -270,7 +270,7 @@ pub async fn mkfs_root_erofs(
 /// Verify that `image` fits in the partition budget. Ports
 /// `check_image_size`.
 pub async fn check_image_size(vfs: &Vfs, image: &Path, partition_mib: u32) -> Result<()> {
-    let bytes = crate::vfs_ext::size_bytes(vfs, image).await?;
+    let bytes = crate::image::vfs_ext::size_bytes(vfs, image).await?;
     let budget = (partition_mib as u64) * 1024 * 1024;
     if bytes > budget {
         return Err(Error::Partition {
@@ -288,8 +288,8 @@ pub async fn check_image_size(vfs: &Vfs, image: &Path, partition_mib: u32) -> Re
 /// Skeleton wrapper: no partition math, just the shell command.
 pub async fn dd_partition(vfs: &Vfs, scratch: &Path, target: &Path, offset_mib: u32) -> Result<()> {
     // Quote the whole `key=value` token so the value survives sh -c.
-    let ifof = crate::vfs_ext::shell_quote(&format!("if={}", scratch.display()));
-    let ofof = crate::vfs_ext::shell_quote(&format!("of={}", target.display()));
+    let ifof = crate::image::vfs_ext::shell_quote(&format!("if={}", scratch.display()));
+    let ofof = crate::image::vfs_ext::shell_quote(&format!("of={}", target.display()));
     let seek = format!("seek={offset_mib}");
     vfs.command(
         "dd_partition",
@@ -344,9 +344,9 @@ pub struct StageRootInputs<'a> {
     /// Optional TUF root JSON to install as `usr/share/updog/root.json`.
     pub tuf_root: Option<&'a Path>,
     /// Optional `file_contexts` file for SELinux labeling. When
-    /// provided, [`crate::selinux::compute_labels`] runs and the
+    /// provided, [`crate::image::selinux::compute_labels`] runs and the
     /// resulting labels are computed but not applied — see
-    /// [`crate::selinux::build_ea_set_script`] for why applying the
+    /// [`crate::image::selinux::build_ea_set_script`] for why applying the
     /// labels requires a stdin-piping primitive `Vfs` does not yet
     /// expose. This function still runs the compute step so a real
     /// `setfiles` error surfaces at build time instead of at first
@@ -358,10 +358,10 @@ pub struct StageRootInputs<'a> {
 /// of `rpm2img::stage_images`.
 ///
 /// Runs, in order:
-///   1. [`crate::rpm_install::install_rpms`] against `root_mount`.
+///   1. [`crate::image::rpm_install::install_rpms`] against `root_mount`.
 ///   2. [`install_ca_certs`] when `ca_bundle` is `Some`.
 ///   3. [`install_tuf_root`] when `tuf_root` is `Some`.
-///   4. [`crate::selinux::compute_labels`] when
+///   4. [`crate::image::selinux::compute_labels`] when
 ///      `selinux_file_contexts` is `Some`.
 ///
 /// Each step is a call into an already-tested primitive; this function
@@ -369,7 +369,7 @@ pub struct StageRootInputs<'a> {
 /// documented in `doc/transforms/variant-image.md::Algorithm` (step
 /// `d`): install → decorate → relabel.
 pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
-    crate::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir).await?;
+    crate::image::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir).await?;
     if let Some(bundle) = inputs.ca_bundle {
         install_ca_certs(vfs, inputs.root_mount, bundle).await?;
     }
@@ -379,7 +379,7 @@ pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
     if let Some(contexts) = inputs.selinux_file_contexts {
         // The bytes are computed but not applied — see doc-comment on
         // StageRootInputs.selinux_file_contexts for the reason.
-        let _ = crate::selinux::compute_labels(vfs, inputs.root_mount, contexts).await?;
+        let _ = crate::image::selinux::compute_labels(vfs, inputs.root_mount, contexts).await?;
     }
     Ok(())
 }

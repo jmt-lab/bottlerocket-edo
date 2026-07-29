@@ -2,7 +2,7 @@
 //!
 //! The build pipeline concatenates every file under
 //! `${ROOT_MOUNT}/boot/boot-config.d/` into a single
-//! [`crate::partition::Part::Private`]-embedded `bootconfig.data`. Snippets
+//! [`crate::image::partition::Part::Private`]-embedded `bootconfig.data`. Snippets
 //! must be single-line `key = value` — no braces, multi-line arrays,
 //! `:=`, or `+=`. See `rpm2img` L598-615 for the shell equivalent.
 
@@ -11,8 +11,8 @@ use std::path::Path;
 use edo::environment::Vfs;
 use regex::Regex;
 
-use crate::error::{Error, Result};
-use crate::vfs_ext::list_files_follow;
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::list_files_follow;
 
 /// The default bootconfig payload used when there are no snippets to
 /// assemble. Matches the shell:

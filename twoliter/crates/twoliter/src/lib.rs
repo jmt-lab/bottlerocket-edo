@@ -8,6 +8,7 @@ use edo::{
 use std::sync::Arc;
 
 pub mod config;
+pub mod image;
 pub mod source;
 pub mod transform;
 

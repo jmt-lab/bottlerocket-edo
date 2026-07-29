@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::vfs_ext::{list_files, shell_quote_path};
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::{list_files, shell_quote_path};
 
 /// Enumerate every `*.rpm` under `dir` (non-recursive) inside the
 /// environment, sorted. Returns an empty vec when the directory is
@@ -82,7 +82,7 @@ pub async fn install_sbom_rpms(
 /// Ports the `rpm -qa` call inside `generate_application_inventory`.
 pub async fn queryformat(vfs: &Vfs, install_root: &Path, queryformat: &str) -> Result<Vec<u8>> {
     let install_root_q = shell_quote_path(install_root);
-    let queryformat_q = crate::vfs_ext::shell_quote(queryformat);
+    let queryformat_q = crate::image::vfs_ext::shell_quote(queryformat);
     let out = vfs
         .output(
             "rpm_queryformat",

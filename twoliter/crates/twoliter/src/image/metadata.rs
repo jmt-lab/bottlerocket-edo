@@ -1,7 +1,7 @@
 //! Variant-metadata RPM spec and rpmbuild argument generation, and the
 //! variant-manifest emission that `twoliter publish` consumers read.
 //!
-//! Consumes the bundled `metadata.spec` (see [`crate::METADATA_SPEC`])
+//! Consumes the bundled `metadata.spec` (see [`crate::image::METADATA_SPEC`])
 //! along with the resolved [`ImageFeatures`] to render the `--with` /
 //! `--without` argument list rpmbuild expects.
 //!
@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
-use crate::error::{Result, SerializationSnafu};
-use crate::model::{
+use crate::image::error::{Result, SerializationSnafu};
+use crate::image::model::{
     Arch, ImageFeature, ImageFeatures, ImageFormat, ImageLayout, PartitionPlan,
 };
 
@@ -98,7 +98,7 @@ pub struct VariantManifest {
     pub arch: Arch,
     pub image_format: ImageFormat,
     pub partition_plan: PartitionPlan,
-    /// Full resolved layout (post-[`crate::layout::resolved_image_layout`]).
+    /// Full resolved layout (post-[`crate::image::layout::resolved_image_layout`]).
     pub image_layout: ImageLayout,
     /// The set of enabled features. Serialized as a sorted array of
     /// kebab-case identifiers (matches [`ImageFeature`]'s wire
@@ -123,6 +123,39 @@ pub struct VariantManifest {
 impl VariantManifest {
     /// Serialize to pretty-printed JSON bytes suitable for writing to
     /// the `manifest.json` output layer.
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
+        let mut bytes = serde_json::to_vec_pretty(self).context(SerializationSnafu)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+}
+
+/// Metadata layer emitted by the `variant-rootfs` transform.
+///
+/// Carries information the disk stage needs but can't rederive from
+/// the rootfs tar alone: the SELinux `file_contexts` path discovered
+/// after `stage_root` installed the policy RPM, and the sorted list
+/// of RPM names installed into the rootfs (used by the finalizer's
+/// SBOM step to attribute packages without re-scanning `deps/rpms/`).
+///
+/// Serialized as JSON with kebab-case keys so a human can `jq` a
+/// broken cache entry when debugging.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RootfsMetadata {
+    /// Absolute path (inside the rootfs) to the `file_contexts` file
+    /// picked out by `resolve_file_contexts`. `None` when no SELinux
+    /// policy RPM landed — the image will boot unlabeled and the
+    /// downstream stage falls back to an empty contexts file.
+    pub file_contexts_path: Option<std::path::PathBuf>,
+    /// Sorted RPM basenames installed into the rootfs (with the
+    /// trailing `.rpm` extension). Duplicates removed, order stable.
+    pub packaged_rpms: Vec<String>,
+}
+
+impl RootfsMetadata {
+    /// Serialize to pretty-printed JSON bytes with a trailing newline
+    /// so the layer file is diff-friendly.
     pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec_pretty(self).context(SerializationSnafu)?;
         bytes.push(b'\n');
@@ -172,7 +205,7 @@ mod tests {
 
     #[test]
     fn embedded_metadata_spec_is_non_empty() {
-        assert!(crate::METADATA_SPEC.contains("%{_cross_os}metadata"));
+        assert!(crate::image::METADATA_SPEC.contains("%{_cross_os}metadata"));
     }
 
     #[test]
@@ -195,6 +228,50 @@ mod tests {
         let bytes = manifest.to_json_bytes().expect("serialize");
         let parsed: VariantManifest = serde_json::from_slice(&bytes).expect("round-trip");
         assert_eq!(parsed, manifest);
+    }
+
+    #[test]
+    fn rootfs_metadata_round_trips_through_json() {
+        let metadata = RootfsMetadata {
+            file_contexts_path: Some(std::path::PathBuf::from(
+                "/usr/lib/selinux/targeted/contexts/files/file_contexts",
+            )),
+            packaged_rpms: vec!["a.rpm".into(), "b.rpm".into()],
+        };
+        let bytes = metadata.to_json_bytes().expect("serialize");
+        let parsed: RootfsMetadata = serde_json::from_slice(&bytes).expect("round-trip");
+        assert_eq!(parsed, metadata);
+    }
+
+    #[test]
+    fn rootfs_metadata_absent_file_contexts_serializes_as_null() {
+        // Variants without an SELinux policy RPM emit
+        // `file_contexts_path: None`; the JSON representation must
+        // survive a round-trip.
+        let metadata = RootfsMetadata {
+            file_contexts_path: None,
+            packaged_rpms: vec![],
+        };
+        let bytes = metadata.to_json_bytes().expect("serialize");
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains("null"), "expected null contexts, got {text}");
+        let parsed: RootfsMetadata = serde_json::from_slice(&bytes).expect("round-trip");
+        assert_eq!(parsed, metadata);
+    }
+
+    #[test]
+    fn rootfs_metadata_wire_shape_is_kebab_case() {
+        let metadata = RootfsMetadata {
+            file_contexts_path: Some(std::path::PathBuf::from("/tmp/fc")),
+            packaged_rpms: vec![],
+        };
+        let bytes = metadata.to_json_bytes().unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            text.contains("\"file-contexts-path\""),
+            "text={text}"
+        );
+        assert!(text.contains("\"packaged-rpms\""), "text={text}");
     }
 
     #[test]

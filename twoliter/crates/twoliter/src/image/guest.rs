@@ -10,9 +10,9 @@ use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::compress::ArtifactSuffix;
-use crate::error::{Error, Result};
-use crate::vfs_ext::{list_dir_all, shell_quote_path};
+use crate::image::compress::ArtifactSuffix;
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::{list_dir_all, shell_quote_path};
 
 /// Copy every image-artifact file (and symlink) from `src` into `dst`
 /// inside the environment. Preserves symlinks by re-emitting `ln -s`

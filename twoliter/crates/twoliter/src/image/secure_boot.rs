@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::model::Arch;
-use crate::vfs_ext::{remove_if_present, shell_quote, shell_quote_path};
+use crate::image::error::{Error, Result};
+use crate::image::model::Arch;
+use crate::image::vfs_ext::{remove_if_present, shell_quote, shell_quote_path};
 
 /// Fixed size of the cert-table blob, per shim's expectations.
 pub const CERT_TABLE_SIZE: usize = 4096;

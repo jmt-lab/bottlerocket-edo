@@ -12,14 +12,15 @@
 //!   selecting a single-bank residual-ROOT layout.
 //! - EIF sidecar disk: `set_eif_partition_sizes` → [`eif_partition_layout`].
 
+use snafu::ResultExt;
 use std::fmt;
 use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::error::Error;
-use crate::model::{ImageFeatures, ImageLayout, PartitionPlan};
-use crate::vfs_ext::shell_quote_path;
+use crate::image::error::Error;
+use crate::image::model::{ImageFeatures, ImageLayout, PartitionPlan};
+use crate::image::vfs_ext::shell_quote_path;
 
 // -------------------------------------------------------------------
 // Partition-type GUIDs (from `partyplanner` §1).
@@ -73,7 +74,9 @@ pub const PRIVATE_SCALE_FACTOR: u32 = 24;
 /// Identifier for a Bottlerocket disk partition slot. Matches the string
 /// keys used by the shell's associative arrays (`BIOS`, `EFI-A`,
 /// `ROOT-B`, `DATA-A`, etc.).
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Part {
     Bios,
     EfiA,
@@ -114,7 +117,7 @@ impl Part {
 }
 
 /// One partition entry in an assembled layout.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PartitionEntry {
     pub part: Part,
     /// Offset from the start of the disk, in MiB.
@@ -124,7 +127,7 @@ pub struct PartitionEntry {
 }
 
 /// Complete partition layout for one disk. Entries are in on-disk order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PartitionLayout {
     pub entries: Vec<PartitionEntry>,
 }
@@ -160,13 +163,66 @@ impl fmt::Display for PartitionLayout {
 /// Result of computing a full disk layout for a variant image. When the
 /// plan is `Split`, `data_disk` holds the layout of the separate data
 /// disk; otherwise it is `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiskLayout {
     /// The OS image layout. Always populated.
     pub os_disk: PartitionLayout,
     /// Optional secondary disk holding DATA-B, present only under
     /// `Split`.
     pub data_disk: Option<PartitionLayout>,
+}
+
+/// Metadata layer emitted by the `variant-disk` transform.
+///
+/// Carries the fully-computed disk layout across the transform
+/// boundary so the downstream `variant-grub` and `variant-image`
+/// stages can locate partition offsets, feature bits, and the
+/// resolved image sizing without recomputing `resolved_image_layout`
+/// + `compute_partition_layout` (both are pure but re-running them
+/// requires reshaping the caller's [`crate::image::model::ImageLayout`] +
+/// [`crate::image::model::ImageFeatures`] inputs, which we don't want to
+/// serialize in three separate places).
+///
+/// Serialized as JSON with kebab-case keys.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub struct DiskLayoutManifest {
+    /// The disk-layout math result: OS-disk partition layout plus an
+    /// optional data-disk layout when the plan is [`PartitionPlan::Split`].
+    pub disk_layout: DiskLayout,
+    /// The resolved image sizing (post-[`crate::image::layout::resolved_image_layout`])
+    /// that the layout was computed against.
+    pub resolved_layout: crate::image::model::ImageLayout,
+    /// The full feature bitset the variant declared. Downstream stages
+    /// key branches (xfs vs ext4, secure boot on/off, first-party
+    /// stack, etc.) off this bitset.
+    pub features: crate::image::model::ImageFeatures,
+    /// The partition-plan (`split` or `unified`) that produced this
+    /// layout. Redundant with `resolved_layout.partition_plan()` but
+    /// carried explicitly for grep-ability of the JSON blob.
+    pub partition_plan: crate::image::model::PartitionPlan,
+    /// Whether the disk stage produced a separate `data.img` scratch
+    /// alongside `os.img`. Cheaper than checking `disk_layout.data_disk.is_some()`
+    /// at every consumer.
+    pub has_data_disk: bool,
+    /// The dm-verity root hash + salt the disk stage produced when it
+    /// ran `veritysetup format`. Serialized so the grub stage can
+    /// render `grub.cfg`'s `DM_VERITY_ROOT` row without re-running
+    /// `veritysetup` over the same inputs (which would be
+    /// deterministic but wasteful).
+    pub verity_info: crate::image::verity::VerityInfo,
+}
+
+impl DiskLayoutManifest {
+    /// Serialize to pretty-printed JSON bytes with a trailing newline.
+    pub fn to_json_bytes(&self) -> crate::image::error::Result<Vec<u8>> {
+        let mut bytes =
+            serde_json::to_vec_pretty(self).context(crate::image::error::SerializationSnafu)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
 }
 
 // -------------------------------------------------------------------
@@ -776,7 +832,7 @@ pub async fn apply_partition_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ImageFeatures, ImageLayout, PartitionPlan};
+    use crate::image::model::{ImageFeatures, ImageLayout, PartitionPlan};
 
     fn features(first_party: bool, in_place: bool) -> ImageFeatures {
         ImageFeatures {
@@ -795,7 +851,7 @@ mod tests {
         let rendered = disk.os_disk.render();
         assert_eq!(
             rendered,
-            include_str!("../tests/fixtures/layout-split-1gib-inplace-yes.txt")
+            include_str!("../../tests/fixtures/layout-split-1gib-inplace-yes.txt")
         );
         // Data disk exists and holds DATA-B at MiB 1, size = 1 GiB - 2 MiB.
         let data = disk.data_disk.as_ref().expect("split has a data disk");
@@ -814,7 +870,7 @@ mod tests {
         let rendered = disk.os_disk.render();
         assert_eq!(
             rendered,
-            include_str!("../tests/fixtures/layout-unified-1gib-inplace-no.txt")
+            include_str!("../../tests/fixtures/layout-unified-1gib-inplace-no.txt")
         );
         assert!(
             disk.data_disk.is_none(),
@@ -831,7 +887,7 @@ mod tests {
         let rendered = disk.os_disk.render();
         assert_eq!(
             rendered,
-            include_str!("../tests/fixtures/layout-stripped-1gib.txt")
+            include_str!("../../tests/fixtures/layout-stripped-1gib.txt")
         );
         assert!(disk.data_disk.is_none());
     }
@@ -859,7 +915,7 @@ mod tests {
         let rendered = layout.render();
         assert_eq!(
             rendered,
-            include_str!("../tests/fixtures/layout-eif-tight-100mib.txt")
+            include_str!("../../tests/fixtures/layout-eif-tight-100mib.txt")
         );
     }
 
@@ -869,7 +925,7 @@ mod tests {
         let rendered = layout.render();
         assert_eq!(
             rendered,
-            include_str!("../tests/fixtures/layout-eif-padded-200mib.txt")
+            include_str!("../../tests/fixtures/layout-eif-padded-200mib.txt")
         );
     }
 
@@ -1044,5 +1100,62 @@ mod tests {
         assert_eq!(partition_label(Part::EfiA), Some("EFI-SYSTEM"));
         assert_eq!(partition_label(Part::EfiB), Some("EFI-BACKUP"));
         assert_eq!(partition_label(Part::DataA), Some(""));
+    }
+
+    fn sample_verity() -> crate::image::verity::VerityInfo {
+        crate::image::verity::VerityInfo {
+            root_hash:
+                "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            salt:
+                "1111111111111111111111111111111111111111111111111111111111111111".into(),
+            data_blocks_4k: 1,
+            data_blocks_512: 8,
+            hash_algorithm: crate::image::verity::VERITY_HASH_ALGORITHM.to_string(),
+            data_block_size: crate::image::verity::VERITY_DATA_BLOCK_SIZE,
+            hash_block_size: crate::image::verity::VERITY_HASH_BLOCK_SIZE,
+        }
+    }
+
+    #[test]
+    fn disk_layout_manifest_round_trips_through_json() {
+        // Build a real layout with the pipeline so the manifest
+        // roundtrip exercises actual data shapes.
+        let l = ImageLayout::new(Some(2), 1, 22, PartitionPlan::Split);
+        let f = features(true, true);
+        let disk = compute_partition_layout(&l, &f).unwrap();
+        let manifest = DiskLayoutManifest {
+            disk_layout: disk,
+            resolved_layout: l,
+            features: f,
+            partition_plan: PartitionPlan::Split,
+            has_data_disk: true,
+            verity_info: sample_verity(),
+        };
+        let bytes = manifest.to_json_bytes().expect("serialize");
+        let parsed: DiskLayoutManifest =
+            serde_json::from_slice(&bytes).expect("round-trip");
+        assert_eq!(parsed, manifest);
+    }
+
+    #[test]
+    fn disk_layout_manifest_wire_shape_is_kebab_case() {
+        let l = ImageLayout::new(Some(1), 1, 22, PartitionPlan::Unified);
+        let f = features(true, true);
+        let disk = compute_partition_layout(&l, &f).unwrap();
+        let manifest = DiskLayoutManifest {
+            disk_layout: disk,
+            resolved_layout: l,
+            features: f,
+            partition_plan: PartitionPlan::Unified,
+            has_data_disk: false,
+            verity_info: sample_verity(),
+        };
+        let bytes = manifest.to_json_bytes().unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains("\"disk-layout\""), "text={text}");
+        assert!(text.contains("\"resolved-layout\""), "text={text}");
+        assert!(text.contains("\"has-data-disk\""), "text={text}");
+        assert!(text.contains("\"partition-plan\""), "text={text}");
+        assert!(text.contains("\"verity-info\""), "text={text}");
     }
 }

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::Result;
+use crate::image::error::Result;
 
 /// Wrap `s` in POSIX single quotes, escaping any embedded single quote
 /// as `'\''`. Safe against every shell metacharacter — the shell does
@@ -89,7 +89,7 @@ pub async fn size_bytes(vfs: &Vfs, path: impl AsRef<Path>) -> Result<u64> {
     let trimmed = text.trim();
     trimmed
         .parse::<u64>()
-        .map_err(|e| crate::error::Error::ParseOutput {
+        .map_err(|e| crate::image::error::Error::ParseOutput {
             tool: "stat".into(),
             reason: format!("expected decimal size, got {trimmed:?}: {e}"),
         })

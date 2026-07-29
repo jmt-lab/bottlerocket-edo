@@ -26,7 +26,7 @@ use tracing::trace;
 ///
 /// Sourced from `br-image` so `crates/br-image/data/builder-group.spec` is
 /// the single point of truth.
-const BUILDER_GROUP_SPEC: &str = br_image::BUILDER_GROUP_SPEC;
+const BUILDER_GROUP_SPEC: &str = crate::image::BUILDER_GROUP_SPEC;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct PackageBuildOptions {

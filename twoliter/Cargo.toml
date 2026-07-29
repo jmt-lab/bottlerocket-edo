@@ -1,10 +1,8 @@
 [workspace]
-members = ["crates/twoliter", "crates/br-image"]
+members = ["crates/twoliter"]
 resolver = "2"
 
 [workspace.dependencies]
-# Shared error-handling library. Pinned here so `crates/twoliter` and
-# `crates/br-image` cannot drift onto incompatible snafu versions.
 snafu = "0.9"
 
 [patch."https://github.com/awslabs/edo"]

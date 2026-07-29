@@ -1,16 +1,16 @@
-//! `br-image`: shared primitives for building Bottlerocket disk images.
+//! `image`: shared primitives for building Bottlerocket disk images.
 //!
-//! This crate is a plain Rust library consumed by twoliter transforms.
+//! This module is a plain Rust library consumed by twoliter transforms.
 //! Every I/O and subprocess operation runs through an
-//! [`edo::environment::Vfs`] handle, so the crate operates against the
+//! [`edo::environment::Vfs`] handle, so the module operates against the
 //! transform's sandboxed environment rather than the host filesystem.
 //! Callers construct a [`Vfs`](edo::environment::Vfs) from the
 //! transform's [`Environment`](edo::environment::Environment),
 //! [`Id`](edo::storage::Id), and [`Log`](edo::context::Log) and pass it
-//! to `br-image` functions; the functions dispatch mkfs, dd,
+//! to `image` functions; the functions dispatch mkfs, dd,
 //! veritysetup, dnf, and friends inside that environment.
 //!
-//! Modules:
+//! Submodules:
 //!
 //! - [`model`] / [`layout`] — pure types and layout resolution
 //!   (`SupportedArch`, `ImageFormat`, `PartitionPlan`, `ImageLayout`,
@@ -57,22 +57,22 @@ pub mod vfs_ext;
 /// The `builder-group.spec` file used to synthesize an RPM that
 /// `Provides: group(builder)`. Ported verbatim from
 /// `old-twoliter/twoliter/embedded/builder-group.spec`.
-pub const BUILDER_GROUP_SPEC: &str = include_str!("../data/builder-group.spec");
+pub const BUILDER_GROUP_SPEC: &str = include_str!("../../data/builder-group.spec");
 
 /// The `metadata.spec` file used to build the per-variant metadata RPM.
 /// Ported verbatim from `old-twoliter/twoliter/embedded/metadata.spec`.
-pub const METADATA_SPEC: &str = include_str!("../data/metadata.spec");
+pub const METADATA_SPEC: &str = include_str!("../../data/metadata.spec");
 
 pub use compress::ArtifactSuffix;
 pub use error::{Error, Result};
 pub use grub::{GrubUefiInstall, install_grub_uefi};
 pub use image::{StageRootInputs, stage_root};
 pub use layout::{resolved_image_layout, validate_image_features};
-pub use metadata::VariantManifest;
+pub use metadata::{RootfsMetadata, VariantManifest};
 pub use ovf::{assemble_ova, render_ova_manifest, sha256_of};
 pub use model::{
     Arch, DEFAULT_DATA_IMAGE_SIZE_GIB, DEFAULT_NO_FIRST_PARTY_OS_IMAGE_SIZE_GIB,
     DEFAULT_OS_IMAGE_SIZE_GIB, DEFAULT_PARTITION_PLAN, DEFAULT_PUBLISH_IMAGE_SIZE_HINT_GIB,
     ImageFeature, ImageFeatures, ImageFormat, ImageLayout, ImageSize, PartitionPlan, SupportedArch,
 };
-pub use partition::{apply_partition_layout, render_sgdisk_argv};
+pub use partition::{DiskLayoutManifest, apply_partition_layout, render_sgdisk_argv};

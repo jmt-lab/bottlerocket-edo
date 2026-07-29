@@ -10,8 +10,8 @@ use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::vfs_ext::shell_quote_path;
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::shell_quote_path;
 
 /// Run `setfiles -n -d -F -m -r <mount> <contexts> <mount>` inside the
 /// environment and return the raw stdout for [`build_ea_set_script`] to

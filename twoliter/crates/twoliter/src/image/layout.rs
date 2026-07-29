@@ -8,8 +8,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::error::Error;
-use crate::model::{
+use crate::image::error::Error;
+use crate::image::model::{
     DEFAULT_NO_FIRST_PARTY_OS_IMAGE_SIZE_GIB, ImageFeature, ImageFormat, ImageLayout, PartitionPlan,
 };
 
@@ -176,7 +176,7 @@ pub fn validate_image_features(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ImageLayout;
+    use crate::image::model::ImageLayout;
 
     fn features(flags: &[ImageFeature]) -> BTreeSet<ImageFeature> {
         flags.iter().copied().collect()

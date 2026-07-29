@@ -5,8 +5,8 @@ use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::vfs_ext::{shell_quote_path, size_bytes};
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::{shell_quote_path, size_bytes};
 
 /// Standard verity parameters used by every Bottlerocket image.
 pub const VERITY_VERSION: u32 = 1;
@@ -17,7 +17,8 @@ pub const VERITY_HASH_BLOCK_SIZE: u32 = 4096;
 /// Result of `veritysetup format`. The transform driver embeds a
 /// rendered representation of these fields in the grub config as the
 /// `DM_VERITY_ROOT` argument.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct VerityInfo {
     pub root_hash: String,
     pub salt: String,
@@ -27,7 +28,9 @@ pub struct VerityInfo {
     /// Data blocks at 512 B (used by the kernel's `dm-mod.create=`
     /// argument).
     pub data_blocks_512: u64,
-    pub hash_algorithm: &'static str,
+    /// Hash algorithm identifier (always `"sha256"` today; stored as
+    /// an owned `String` so `VerityInfo` can round-trip through JSON).
+    pub hash_algorithm: String,
     pub data_block_size: u32,
     pub hash_block_size: u32,
 }
@@ -179,7 +182,7 @@ pub async fn generate_verity_root(
 
     // Step 3: verify. The root-hash is a fixed-format hex string from
     // veritysetup itself (no metacharacters), but quote it for defense.
-    let root_hash_q = crate::vfs_ext::shell_quote(&info.root_hash);
+    let root_hash_q = crate::image::vfs_ext::shell_quote(&info.root_hash);
     vfs.command(
         "verity_verify",
         "veritysetup",
@@ -229,7 +232,7 @@ pub fn parse_veritysetup_output(text: &str) -> Result<VerityInfo> {
         salt,
         data_blocks_4k,
         data_blocks_512,
-        hash_algorithm: VERITY_HASH_ALGORITHM,
+        hash_algorithm: VERITY_HASH_ALGORITHM.to_string(),
         data_block_size: VERITY_DATA_BLOCK_SIZE,
         hash_block_size: VERITY_HASH_BLOCK_SIZE,
     })
@@ -279,7 +282,7 @@ Root hash:              11223344556677889900112233445566778899001122334455667788
             salt: "ef01".into(),
             data_blocks_4k: 100,
             data_blocks_512: 800,
-            hash_algorithm: VERITY_HASH_ALGORITHM,
+            hash_algorithm: VERITY_HASH_ALGORITHM.to_string(),
             data_block_size: VERITY_DATA_BLOCK_SIZE,
             hash_block_size: VERITY_HASH_BLOCK_SIZE,
         };

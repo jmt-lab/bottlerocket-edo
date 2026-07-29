@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::vfs_ext::{remove_if_present, shell_quote, shell_quote_path};
+use crate::image::error::{Error, Result};
+use crate::image::vfs_ext::{remove_if_present, shell_quote, shell_quote_path};
 
 /// Every image artifact suffix the build pipeline produces. This is the
 /// single source of truth: `compress_image` refuses any extension not on
@@ -96,7 +96,7 @@ impl ArtifactSuffix {
 /// `ext4.lz4` / `verity.lz4` invoke `lz4 -9v`; `qcow2` and `vmdk` invoke
 /// `qemu-img convert` (with `subformat=streamOptimized` for vmdk to
 /// support OVA embedding); `ova` has no compressor and is rejected here
-/// (OVAs are assembled by [`crate::ovf::assemble_ova`], not this
+/// (OVAs are assembled by [`crate::image::ovf::assemble_ova`], not this
 /// function).
 pub async fn compress_image(
     vfs: &Vfs,

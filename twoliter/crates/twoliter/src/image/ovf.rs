@@ -11,8 +11,8 @@ use regex::Regex;
 
 use snafu::OptionExt;
 
-use crate::error::{Error, InvalidLayoutSnafu, Result};
-use crate::vfs_ext::shell_quote_path;
+use crate::image::error::{Error, InvalidLayoutSnafu, Result};
+use crate::image::vfs_ext::shell_quote_path;
 
 /// Bytes-per-GiB used to render the disk-size fields in the OVF.
 pub const BYTES_IN_GIB: u64 = 1024 * 1024 * 1024;
@@ -42,7 +42,7 @@ pub struct SecureBootCerts {
 /// - `os_vmdk_name` / `data_vmdk_name` are the filenames referenced in
 ///   the OVF; `data_vmdk_name = ""` for `unified` layouts.
 /// - `os_gib` / `data_gib` are the publish-time sizes in GiB (per
-///   [`crate::model::ImageLayout::publish_image_sizes_gib`]).
+///   [`crate::image::model::ImageLayout::publish_image_sizes_gib`]).
 /// - When `certs` is `Some`, the four secure-boot placeholders are also
 ///   substituted.
 ///
@@ -214,8 +214,8 @@ pub async fn assemble_ova(
     let ova_q = shell_quote_path(ova_output);
     let ovf_dir_q = shell_quote_path(ovf_dir);
     let output_dir_q = shell_quote_path(output_dir);
-    let ovf_name_q = crate::vfs_ext::shell_quote(&ovf_name);
-    let manifest_name_q = crate::vfs_ext::shell_quote(&manifest_name);
+    let ovf_name_q = crate::image::vfs_ext::shell_quote(&ovf_name);
+    let manifest_name_q = crate::image::vfs_ext::shell_quote(&manifest_name);
     vfs.command(
         "ova_tar_create",
         "tar",
@@ -231,7 +231,7 @@ pub async fn assemble_ova(
     .await?;
 
     // 4. tar -rvf <ova> -C <output_dir> <os_vmdk>
-    let os_vmdk_q = crate::vfs_ext::shell_quote(&os_vmdk_name);
+    let os_vmdk_q = crate::image::vfs_ext::shell_quote(&os_vmdk_name);
     vfs.command(
         "ova_tar_append_os",
         "tar",
@@ -247,7 +247,7 @@ pub async fn assemble_ova(
 
     // 5. tar -rvf <ova> -C <output_dir> <data_vmdk> — split plan only.
     if let Some(name) = data_vmdk_name {
-        let data_q = crate::vfs_ext::shell_quote(&name);
+        let data_q = crate::image::vfs_ext::shell_quote(&name);
         vfs.command(
             "ova_tar_append_data",
             "tar",

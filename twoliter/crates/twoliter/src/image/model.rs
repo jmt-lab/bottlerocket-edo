@@ -13,7 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::image::error::Error;
 
 /// Target CPU architecture for a Bottlerocket image build.
 ///
@@ -88,7 +88,7 @@ impl From<u16> for ImageSize {
 /// Image layout, as deserialized from a variant manifest.
 ///
 /// Callers should always run the layout through
-/// [`crate::layout::resolved_image_layout`] before driving a build.
+/// [`crate::image::layout::resolved_image_layout`] before driving a build.
 #[derive(Deserialize, Serialize, Debug, Copy, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub struct ImageLayout {
@@ -152,7 +152,7 @@ impl ImageLayout {
     }
 
     /// Internal: overwrite the raw OS-image-size field. Used by
-    /// [`crate::layout::resolved_image_layout`].
+    /// [`crate::image::layout::resolved_image_layout`].
     pub(crate) fn set_os_image_size_gib(&mut self, v: Option<ImageSize>) {
         self.os_image_size_gib = v;
     }
@@ -320,13 +320,16 @@ impl Serialize for ImageFeature {
 ///
 /// The type boundary crossing module lines is [`BTreeSet<ImageFeature>`]
 /// (round-trippable with the manifest and preserved by
-/// [`crate::layout::validate_image_features`]). This struct is provided
+/// [`crate::image::layout::validate_image_features`]). This struct is provided
 /// as an ergonomic view for internal call sites that want field-name
 /// access; convert with [`Self::from_set`] / [`Self::to_set`].
 ///
 /// The `BTreeSet` (rather than `HashSet`) gives deterministic iteration
 /// for messages and hashing.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Copy, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
 pub struct ImageFeatures {
     pub grub_set_private_var: bool,
     pub systemd_networkd: bool,

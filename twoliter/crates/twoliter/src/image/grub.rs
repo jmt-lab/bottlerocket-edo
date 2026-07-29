@@ -1,15 +1,15 @@
 //! GRUB installation and grub.cfg emission (non-signing paths). The
 //! signing paths (`sign_grub`, `unembed_grub`, `sign_grubcfg`) live in
-//! [`crate::secure_boot`].
+//! [`crate::image::secure_boot`].
 
 use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::error::{Error, Result};
-use crate::model::Arch;
-use crate::secure_boot::{Sbsetup, provide_certs, sign_grub, sign_mokm, sign_shim, unembed_grub, zero_shim};
-use crate::vfs_ext::{list_files, shell_quote, shell_quote_path};
+use crate::image::error::{Error, Result};
+use crate::image::model::Arch;
+use crate::image::secure_boot::{Sbsetup, provide_certs, sign_grub, sign_mokm, sign_shim, unembed_grub, zero_shim};
+use crate::image::vfs_ext::{list_files, shell_quote, shell_quote_path};
 
 /// Configuration for [`install_grub_bios`].
 #[derive(Debug, Clone)]
@@ -74,13 +74,13 @@ pub struct GrubUefiInstall<'a> {
     /// Sized by `efi_partition_mib` MiB.
     pub efi_scratch: &'a Path,
     /// EFI-A partition size in MiB, from
-    /// [`crate::partition::compute_partition_layout`].
+    /// [`crate::image::partition::compute_partition_layout`].
     pub efi_partition_mib: u32,
     /// EFI-A partition offset in MiB, from
-    /// [`crate::partition::compute_partition_layout`].
+    /// [`crate::image::partition::compute_partition_layout`].
     pub efi_offset_mib: u32,
     /// When `true`, sign shim / mokm / grub via
-    /// [`crate::secure_boot`]. When `false`, zero the shim's vendor
+    /// [`crate::image::secure_boot`]. When `false`, zero the shim's vendor
     /// cert and unembed the grub gpg pubkey (matches
     /// `rpm2img::L426-436`).
     pub uefi_secure_boot: bool,
@@ -272,7 +272,7 @@ pub async fn install_grub_uefi<'a>(vfs: &Vfs, inputs: &GrubUefiInstall<'a>) -> R
     }
 
     // Step 6: dd the ESP into the OS disk at the EFI-A offset.
-    crate::image::dd_partition(vfs, inputs.efi_scratch, inputs.os_image, inputs.efi_offset_mib)
+    crate::image::image::dd_partition(vfs, inputs.efi_scratch, inputs.os_image, inputs.efi_offset_mib)
         .await
 }
 
@@ -342,7 +342,7 @@ pub struct GrubCfgOptions<'a> {
     /// Space-separated kernel parameters.
     pub kernel_parameters: &'a str,
     /// The rendered `DM_VERITY_ROOT` value (see
-    /// [`crate::verity::VerityInfo::dm_verity_root_row`]).
+    /// [`crate::image::verity::VerityInfo::dm_verity_root_row`]).
     pub dm_verity_root: &'a str,
     /// When `true`, disable interactive edits and signature checks
     /// (secure-boot mode).
