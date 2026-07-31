@@ -4,4 +4,6 @@ mod variant;
 
 pub use kit::KitTransform;
 pub use package::PackageBuildTransform;
-pub use variant::VariantImageTransform;
+pub use variant::{
+    VariantDiskTransform, VariantGrubTransform, VariantImageTransform, VariantRootfsTransform,
+};

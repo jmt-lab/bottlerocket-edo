@@ -1,5 +1,8 @@
 use crate::source::{KitImageSource, KitImageVendor};
-use crate::transform::{KitTransform, PackageBuildTransform, VariantImageTransform};
+use crate::transform::{
+    KitTransform, PackageBuildTransform, VariantDiskTransform, VariantGrubTransform,
+    VariantImageTransform, VariantRootfsTransform,
+};
 use edo::{
     context::{Context, FromElement},
     source::{Source, Vendor},
@@ -25,6 +28,35 @@ pub fn register(ctx: &Context) {
     registry.register_transform(
         "kit",
         Arc::new(async |element, ctx| Ok(Transform::new(KitTransform::new(&element, &ctx).await?))),
+    );
+    // The `variant-*` transform family: four independently-cached
+    // stages that together produce the same eight-layer artifact the
+    // pre-decomposition `variant-image` monolith did. See
+    // `crates/twoliter/src/transform/variant/mod.rs` for the
+    // dependency chain and hash-input decomposition.
+    registry.register_transform(
+        "variant-rootfs",
+        Arc::new(async |element, ctx| {
+            Ok(Transform::new(
+                VariantRootfsTransform::new(&element, &ctx).await?,
+            ))
+        }),
+    );
+    registry.register_transform(
+        "variant-disk",
+        Arc::new(async |element, ctx| {
+            Ok(Transform::new(
+                VariantDiskTransform::new(&element, &ctx).await?,
+            ))
+        }),
+    );
+    registry.register_transform(
+        "variant-grub",
+        Arc::new(async |element, ctx| {
+            Ok(Transform::new(
+                VariantGrubTransform::new(&element, &ctx).await?,
+            ))
+        }),
     );
     registry.register_transform(
         "variant-image",

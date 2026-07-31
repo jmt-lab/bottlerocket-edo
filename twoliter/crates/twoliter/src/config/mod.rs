@@ -10,12 +10,14 @@ mod kit;
 mod overrides;
 mod package;
 pub mod twoliter;
+pub mod variant;
 
 use kit::Kit;
 use overrides::TwoliterOverride;
 use package::Package;
 use snafu::{OptionExt, ResultExt};
 use twoliter::Twoliter;
+use variant::Variant;
 
 /// Default filename for the auto-discovered project-root override.
 ///
@@ -36,11 +38,13 @@ pub enum ConfigType {
     Project(Twoliter),
     Package(Package),
     Kit(Kit),
+    Variant(Variant),
 }
 
 enum Expect {
     Package,
     Kit,
+    Variant,
 }
 
 impl Config {
@@ -64,6 +68,20 @@ impl Config {
         if pkg_dir.try_exists().context(error::IoSnafu)? {
             Self::walk(&Expect::Package, &pkg_addr, &pkg_dir, project.schema_mut())?;
         }
+        // 3. `variants/<name>/variant.toml` walked at `//variants`.
+        //    Each variant emits four elements
+        //    (`//variants/<name>/{rootfs,disk,grub}` + the finalizer
+        //    at `//variants/<name>`) via `Variant::to_edo`.
+        let (variant_dir, variant_addr) =
+            (path.join("variants"), Addr::parse("//variants")?);
+        if variant_dir.try_exists().context(error::IoSnafu)? {
+            Self::walk(
+                &Expect::Variant,
+                &variant_addr,
+                &variant_dir,
+                project.schema_mut(),
+            )?;
+        }
         Ok(project)
     }
 
@@ -83,6 +101,7 @@ impl Config {
                 let child_schema = match expect {
                     Expect::Kit => Self::kit_toml(namespace, &path)?,
                     Expect::Package => Self::package_toml(namespace, &path)?,
+                    Expect::Variant => Self::variant_toml(namespace, &path)?,
                 };
                 if let Some(child_schema) = child_schema.as_ref() {
                     schema.merge(child_schema);
@@ -119,6 +138,11 @@ impl Config {
                     ConfigType::Kit(_) => error::ExpectedSnafu {
                         expected: "project",
                         actual: "kit",
+                    }
+                    .fail(),
+                    ConfigType::Variant(_) => error::ExpectedSnafu {
+                        expected: "project",
+                        actual: "variant",
                     }
                     .fail(),
                 },
@@ -204,6 +228,11 @@ impl Config {
                         actual: "project",
                     }
                     .fail(),
+                    ConfigType::Variant(_) => error::ExpectedSnafu {
+                        expected: "kit",
+                        actual: "variant",
+                    }
+                    .fail(),
                 },
             }?;
 
@@ -248,6 +277,11 @@ impl Config {
                         actual: "kit",
                     }
                     .fail(),
+                    ConfigType::Variant(_) => error::ExpectedSnafu {
+                        expected: "package",
+                        actual: "variant",
+                    }
+                    .fail(),
                 },
             }?;
 
@@ -260,6 +294,54 @@ impl Config {
             return Ok(Some(schema));
         }
         // If there is a edo.toml in the path return this instead
+        if let Some(mut schema) = Self::edo_toml(path)? {
+            schema.propagate();
+            schema.with_namespace(namespace);
+            Ok(Some(schema))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn variant_toml<P: AsRef<Path>>(
+        namespace: &Addr,
+        path: P,
+    ) -> Result<Option<Schema>, error::Error> {
+        let variant_toml = path.as_ref().join("variant.toml");
+        if variant_toml.try_exists().context(error::IoSnafu)? {
+            let toml_schema = std::fs::read_to_string(&variant_toml).context(error::IoSnafu)?;
+            let config: Config = toml::from_str(&toml_schema).context(error::DeserializeSnafu {
+                path: variant_toml.clone(),
+            })?;
+            let mut schema = match config {
+                Config::V1(element) => match element {
+                    ConfigType::Variant(v) => Ok(v.to_edo(namespace)?),
+                    ConfigType::Kit(_) => error::ExpectedSnafu {
+                        expected: "variant",
+                        actual: "kit",
+                    }
+                    .fail(),
+                    ConfigType::Package(_) => error::ExpectedSnafu {
+                        expected: "variant",
+                        actual: "package",
+                    }
+                    .fail(),
+                    ConfigType::Project(_) => error::ExpectedSnafu {
+                        expected: "variant",
+                        actual: "project",
+                    }
+                    .fail(),
+                },
+            }?;
+
+            // If there is an edo.toml alongside, merge it in.
+            if let Some(edo_schema) = Self::edo_toml(path)? {
+                schema.merge(&edo_schema);
+            }
+            schema.propagate();
+            schema.with_namespace(namespace);
+            return Ok(Some(schema));
+        }
         if let Some(mut schema) = Self::edo_toml(path)? {
             schema.propagate();
             schema.with_namespace(namespace);
