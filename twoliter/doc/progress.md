@@ -7,13 +7,13 @@
   - [x] config/overrides
   - [x] config/twoliter-toml
   - [x] config/package-toml
-- [-] Phase 2
+- [x] Phase 2
   - [x] image-building
   - [x] buildsys manifest types
   - [x] transforms/variant-image
-  - [ ] config/variant-toml
-  - [ ] cli/build variant
-  - [ ] config/mod.rs to walk variants/*/
+  - [x] config/variant-toml
+  - [x] cli/build variant
+  - [x] config/mod.rs to walk variants/*/
 - [ ] Phase 3
   - [ ] publish/publish-kit.md
   - [ ] publish/ami.md

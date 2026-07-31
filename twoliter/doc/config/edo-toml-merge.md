@@ -6,7 +6,7 @@ documents what it does and when to use it.
 ## Behavior
 
 For every directory that `Config::load` walks (project root, each
-`packages/*/`, each `kits/*/`, each future `variants/*/`), an adjacent
+`packages/*/`, each `kits/*/`, each `variants/*/`), an adjacent
 `edo.toml` — if present — is parsed as a raw edo `Schema` and merged into the
 twoliter-generated schema for that directory.
 

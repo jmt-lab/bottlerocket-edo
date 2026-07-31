@@ -9,11 +9,16 @@
 //! | 0 | `application/vnd.bottlerocket.variant.rootfs.tar` | tar of the fully-populated `root-mount/` |
 //! | 1 | `application/vnd.bottlerocket.variant.rootfs.metadata+json` | [`RootfsMetadata`] JSON |
 //!
-//! **Inputs** (edo `depends`): kits, packages, guest images (as
-//! transform-to-transform addresses on the element).
+//! **Inputs** (edo `depends`): packages, guest images (as
+//! transform-to-transform addresses on the element). `packages` is
+//! the *filtered* subset of `[variant.included-packages].packages`
+//! that resolve to real in-repo `//packages/<name>/rpm` transforms;
+//! kit-supplied names are absent from the transform graph and arrive
+//! via the `kits` source scope below.
 //!
 //! **Source scopes** (element `source`):
 //! - `default`   — SDK image (exactly one)
+//! - `kits`      — zero or more `kit-image` sources
 //! - `ca-bundle` — optional CA bundle for RPM installs
 //! - `tuf-root`  — optional TUF root JSON
 //!
@@ -21,6 +26,15 @@
 //! digests, `ca-bundle` + `tuf-root` digests, arch, twoliter binary
 //! digest. Explicitly *not* included: feature flags, layout, kernel
 //! parameters, `sbkeys`, `ovf-template` (all downstream concerns).
+//!
+//! **`included_packages` name list** (on
+//! [`VariantImageOptions`](super::options::VariantImageOptions)):
+//! the full unfiltered list of package short names, carrying both
+//! in-repo and kit-supplied names. This transform stores it on
+//! `self.options.included_packages` but does not consume it — the
+//! intended future consumer is a switch of
+//! [`crate::image::rpm_install::install_rpms`] from `rpm -iv
+//! <every-rpm-in-dir>` to `dnf install <name-list>`.
 
 use async_trait::async_trait;
 use edo::{
@@ -56,6 +70,11 @@ pub struct VariantRootfsTransform {
     pub sdk: Addr,
     pub options: VariantImageOptions,
     pub sdk_source: Source,
+    /// Project kits as `kit-image` sources, drawn from the element's
+    /// `"kits"` source scope. Order matches the scope's declaration
+    /// order in the config emitter; determinism-critical uses (unique
+    /// id hashing) sort digests explicitly.
+    pub kits: Vec<Source>,
     pub ca_bundle_source: Option<Source>,
     pub tuf_root_source: Option<Source>,
 }
@@ -92,6 +111,19 @@ impl FromElement for VariantRootfsTransform {
         };
         let sdk_source = ctx.add_source(&sdk_element).await?;
 
+        // Project kits arrive as `kit-image` sources under the
+        // element's `"kits"` scope (populated by `Variant::to_edo`).
+        // They're sources, not transforms, so they don't appear in
+        // `depends()` and don't participate in the transform graph
+        // shape — same wire-up as `PackageBuildTransform::new`'s
+        // `kit` scope. An empty / missing scope is a valid config.
+        let mut kits = Vec::new();
+        if let Some(kit_list) = scope_table.get("kits") {
+            for kit_element in kit_list {
+                kits.push(ctx.add_source(kit_element).await?);
+            }
+        }
+
         let ca_bundle_source = resolve_optional(&scope_table, "ca-bundle", ctx).await?;
         let tuf_root_source = resolve_optional(&scope_table, "tuf-root", ctx).await?;
 
@@ -103,6 +135,7 @@ impl FromElement for VariantRootfsTransform {
                 .unwrap_or(Addr::parse("//default")?),
             options,
             sdk_source,
+            kits,
             ca_bundle_source,
             tuf_root_source,
         })
@@ -118,15 +151,17 @@ impl TransformImpl for VariantRootfsTransform {
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
         let sdk_id = self.sdk_source.get_unique_id().await?;
 
-        let mut kits = self.options.kits.clone();
-        kits.sort();
-        let mut kit_digests = Vec::with_capacity(kits.len());
-        for addr in &kits {
-            let dep = ctx
-                .get(addr)
-                .context(error::DependSnafu { addr: addr.clone() })?;
-            kit_digests.push(dep.get_unique_id(ctx).await?.digest().to_string());
+        // Kit digests come from the resolved `Source` handles, not
+        // from a transform lookup — kits at `//kits/<vendor>/<name>`
+        // are `kit-image` sources (see `Twoliter::to_edo`). Sort the
+        // digests after collection to keep the hash deterministic
+        // regardless of declaration order; the source list itself
+        // has no `Addr` to sort by post-resolution.
+        let mut kit_digests = Vec::with_capacity(self.kits.len());
+        for source in &self.kits {
+            kit_digests.push(source.get_unique_id().await?.digest().to_string());
         }
+        kit_digests.sort();
 
         let mut packages = self.options.packages.clone();
         packages.sort();
@@ -201,11 +236,12 @@ impl TransformImpl for VariantRootfsTransform {
     }
 
     async fn depends(&self) -> TransformResult<Vec<Addr>> {
+        // Kits are sources (see `FromElement::new`), so they never
+        // appear here — only genuine transform-to-transform edges do.
         Ok(self
             .options
-            .kits
+            .packages
             .iter()
-            .chain(self.options.packages.iter())
             .chain(self.options.guest_images.iter())
             .cloned()
             .collect())
@@ -213,6 +249,9 @@ impl TransformImpl for VariantRootfsTransform {
 
     async fn prepare(&self, log: &Log, ctx: &Handle) -> TransformResult<()> {
         self.sdk_source.cache(log, ctx.storage()).await?;
+        for kit in &self.kits {
+            kit.cache(log, ctx.storage()).await?;
+        }
         for opt in [&self.ca_bundle_source, &self.tuf_root_source] {
             if let Some(s) = opt {
                 s.cache(log, ctx.storage()).await?;
@@ -224,6 +263,11 @@ impl TransformImpl for VariantRootfsTransform {
     async fn needs_prepare(&self, ctx: &Handle) -> TransformResult<bool> {
         if !self.sdk_source.is_cached(ctx.storage()).await? {
             return Ok(true);
+        }
+        for kit in &self.kits {
+            if !kit.is_cached(ctx.storage()).await? {
+                return Ok(true);
+            }
         }
         for opt in [&self.ca_bundle_source, &self.tuf_root_source] {
             if let Some(s) = opt {
@@ -246,7 +290,29 @@ impl TransformImpl for VariantRootfsTransform {
             .clone()
             .unwrap_or_else(|| std::env::consts::ARCH.to_string());
 
-        for addr in self.options.kits.iter().chain(self.options.packages.iter()) {
+        // Stage each project kit as a `kit-image` source. Kits carry
+        // their RPMs inside the pulled OCI image; the source
+        // implementation is responsible for extracting them into
+        // `deps/rpms/` so `stage_root` sees them alongside
+        // package-transform RPMs.
+        for kit in self.kits.iter() {
+            let id = kit.get_unique_id().await?;
+            trace!(
+                component = "transform",
+                type = "variant-rootfs",
+                "staging kit source with id {id}"
+            );
+            env.stage(
+                ctx,
+                ArtifactStageOptions::builder()
+                    .id(id)
+                    .path(rpm_root)
+                    .build(),
+            )
+            .await?;
+        }
+
+        for addr in self.options.packages.iter() {
             let t = ctx
                 .get(addr)
                 .context(error::DependSnafu { addr: addr.clone() })?;

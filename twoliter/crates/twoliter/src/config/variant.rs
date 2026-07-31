@@ -31,6 +31,8 @@ use edo::context::{Addr, ContextResult, Element, Schema, SourceMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::image::ImageFormat;
+
 /// The parsed `variant.toml` config block, extracted from the outer
 /// [`Config::V1(ConfigType::Variant(...))`] discriminator.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -49,10 +51,11 @@ pub struct Variant {
     #[serde(default)]
     pub arch: Option<String>,
 
-    /// Kits this variant includes. Each entry references a
-    /// `//kits/<vendor>/<name>` element declared in `Twoliter.toml`.
+    /// Arches this variant is allowed to build on. Absent = any arch.
+    /// Emitted verbatim into every stage's config as `supported-arches`;
+    /// enforcement is the transform's responsibility.
     #[serde(default)]
-    pub kit: Vec<VariantKitRef>,
+    pub supported_arches: Option<Vec<String>>,
 
     /// Kernel parameters passed to the built image. Order-sensitive:
     /// grub concatenates the strings verbatim.
@@ -74,15 +77,6 @@ pub struct Variant {
 
 fn default_version() -> semver::Version {
     semver::Version::new(0, 0, 0)
-}
-
-/// One `[[variant.kit]]` entry.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub struct VariantKitRef {
-    /// The kit's transform address (e.g.
-    /// `//kits/bottlerocket/core-kit`).
-    pub addr: Addr,
 }
 
 /// One `[[variant.guest-image]]` entry.
@@ -111,9 +105,9 @@ pub struct IncludedPackagesBlock {
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VariantImageBlock {
-    /// Image format on disk. Serialized as one of `raw`, `vmdk`.
+    /// Image format on disk. One of `raw`, `vmdk`, `qcow2`, `eif`.
     #[serde(default)]
-    pub format: Option<String>,
+    pub format: Option<ImageFormat>,
     /// Partition-plan; `split` or `unified`.
     #[serde(default)]
     pub partition_plan: Option<String>,
@@ -121,10 +115,13 @@ pub struct VariantImageBlock {
     pub os_image_size_gib: Option<u16>,
     #[serde(default)]
     pub data_image_size_gib: Option<u16>,
+    /// Single publish-size hint (in GiB). At emit time this is
+    /// broadcast to both `os-image-publish-size-gib` and
+    /// `data-image-publish-size-gib` on the transform config; the
+    /// transform side (`transform/variant/layout.rs::image_layout`)
+    /// treats the two fields as one hint via `.or()` fallback.
     #[serde(default)]
-    pub os_image_publish_size_gib: Option<u16>,
-    #[serde(default)]
-    pub data_image_publish_size_gib: Option<u16>,
+    pub publish_image_size_hint_gib: Option<u16>,
     #[serde(default)]
     pub features: BTreeMap<String, bool>,
 }
@@ -136,7 +133,82 @@ impl Variant {
     /// `namespace` is the incoming `//variants` prefix from
     /// [`Config::walk`]. The variant's name from the toml is used
     /// verbatim as the next segment.
-    pub fn to_edo(&self, namespace: &Addr) -> ContextResult<Schema> {
+    ///
+    /// `kits` is the resolved list of `//kits/<vendor>/<name>`
+    /// addresses drawn from the project-level `[[kit]]` list in
+    /// `Twoliter.toml`. Every variant implicitly receives every
+    /// project kit; the caller (`config/mod.rs::Config::variant_toml`)
+    /// is responsible for the resolution.
+    ///
+    /// **Design note.** This is a deliberate simplification of old
+    /// twoliter's per-variant kit selection (which flowed through
+    /// Cargo `[build-dependencies]`). The tradeoff:
+    /// - Every variant depends on every project kit as a `kit-image`
+    ///   source, so a change to *any* project kit invalidates the
+    ///   rootfs cache for *every* variant
+    ///   (`transform/variant/hash.rs::rootfs_hash_changes_on_kit_digest_change`).
+    /// - The scheduler waits on all kit requirements to resolve before
+    ///   the rootfs stage's `FromElement` runs (same guarantee the SDK
+    ///   source relies on).
+    /// - Config authors get one place to declare kits
+    ///   (`Twoliter.toml`), not two.
+    ///
+    /// Acceptable for projects with a small kit set where every kit
+    /// is used by every variant (the Bottlerocket house layout). If a
+    /// project outgrows this, add a `kits = ["name", ...]` narrowing
+    /// field on `Variant` that filters this slice by kit name.
+    ///
+    /// **Wire shape for kits.** Kits enter the schema as `kit-image`
+    /// source `Requirement`s at `//kits/<vendor>/<name>` (emitted by
+    /// `Twoliter::to_edo`). They are *not* transforms. This emitter
+    /// therefore attaches them to the rootfs element's `source` field
+    /// under a `"kits"` scope — parallel to the SDK's `"default"`
+    /// scope — where `VariantRootfsTransform::new` resolves them via
+    /// `ctx.add_source(...)` into a `Vec<Source>`. Kits never appear
+    /// in any stage's `config` map or `depends()` output.
+    ///
+    /// **Wire shape for included-packages.** Entries in
+    /// `[variant.included-packages].packages` are package short names.
+    /// They fall into two categories at emit time:
+    ///
+    /// - **In-repo** names — those present in the `project_packages`
+    ///   set, which the caller
+    ///   ([`crate::config::Config::variant_toml`]) built from every
+    ///   `packages/<dir>/package.toml`'s parsed `Package.name` field
+    ///   during the earlier packages walk. Each in-repo name is
+    ///   emitted as a `//packages/<name>/rpm` transform-graph
+    ///   dependency on the rootfs element (via the config-side
+    ///   `packages` field); `VariantRootfsTransform::stage` then
+    ///   causes those RPMs to build and stage into `deps/rpms/`.
+    ///
+    /// - **Kit-supplied** names — everything else. No transform
+    ///   exists at `//packages/<name>/rpm` for these; their RPMs
+    ///   arrive in `deps/rpms/` through the kit-image source scope
+    ///   above. Emitting a phantom transform address for them would
+    ///   fail scheduler resolution, so they're deliberately absent
+    ///   from the transform-graph deps.
+    ///
+    /// Regardless of category, the *full unfiltered* name list is
+    /// also emitted verbatim into the rootfs element's config under
+    /// the `included-packages` key. `VariantRootfsTransform` carries
+    /// it via `VariantImageOptions::included_packages` (a plain code
+    /// span rather than an intra-doc link, since the `transform`
+    /// module is crate-private and not reachable through rustdoc)
+    /// but does not read it today; the intended consumer is a future
+    /// switch of `image::rpm_install::install_rpms` from
+    /// `rpm -iv <every-rpm-in-dir>` to `dnf install <name-list>`.
+    ///
+    /// **Ambiguity.** If a short name matches *both* an in-repo
+    /// package and a kit-supplied RPM, the in-repo one wins here:
+    /// this emitter always emits the transform dep. Whichever RPM
+    /// ends up installed at runtime is resolved by the eventual
+    /// dnf-install step, which is out of scope for this emitter.
+    pub fn to_edo(
+        &self,
+        namespace: &Addr,
+        kits: &[Addr],
+        project_packages: &BTreeSet<String>,
+    ) -> ContextResult<Schema> {
         let variant_addr = namespace.join(&Addr::parse(&self.name)?);
         let rootfs_addr = variant_addr.join(&Addr::parse("rootfs")?);
         let disk_addr = variant_addr.join(&Addr::parse("disk")?);
@@ -148,19 +220,22 @@ impl Variant {
         let sdk_env = Addr::parse("//sdk-isolated")?;
         let sdk_addr = Addr::parse("//bottlerocket-sdk")?;
 
-        // Resolve `kits` addresses. The kit's transform address is
-        // the `<addr>/build` sub-address by convention (see
-        // `config/kit.rs`); we accept both the base kit addr and
-        // the `/build` sub-addr for future-proofing.
-        let kits: Vec<Addr> = self.kit.iter().map(|k| k.addr.clone()).collect();
+        // Full unfiltered list — flows verbatim into every stage's
+        // `included-packages` config field (stripped to empty on
+        // non-rootfs stages by `strip_deps`) for future dnf-install
+        // consumption. See the `to_edo` doc-comment above.
+        let all_included: Vec<String> = self.included_packages.packages.clone();
 
-        // Packages come from `included-packages.packages`.
-        // Historically these are RPM build transforms at
-        // `//packages/<name>/rpm`.
+        // Transform-graph deps: only names known to have a real
+        // in-repo `//packages/<name>/rpm` transform emitted by the
+        // earlier packages walk. Kit-supplied names are silently
+        // dropped here — their RPMs enter `deps/rpms/` through the
+        // rootfs element's `kits` source scope instead.
         let packages: Vec<Addr> = self
             .included_packages
             .packages
             .iter()
+            .filter(|name| project_packages.contains(name.as_str()))
             .map(|name| Addr::parse(&format!("//packages/{name}/rpm")))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -169,25 +244,31 @@ impl Variant {
 
         // Assemble the shared `VariantImageOptions` config block used
         // by every stage's element.
-        let base_options = self.base_options(&kits, &packages, &guest_images);
+        let base_options = self.base_options(&all_included, &packages, &guest_images);
 
         let mut transforms = BTreeMap::new();
 
         // Rootfs element. Every stage carries the union
         // `VariantImageOptions`, but only the rootfs stage actually
-        // reads `kits`/`packages`/`guest-images` for its
-        // `depends()`. The others fill those fields with empty lists
-        // so their `depends()` doesn't see spurious edges.
+        // reads `packages`/`guest-images` for its `depends()`. The
+        // others fill those fields with empty lists so their
+        // `depends()` doesn't see spurious edges. Kits are attached
+        // separately as `kit-image` sources under the `"kits"` scope
+        // — see the `to_edo` doc-comment above.
+        let mut rootfs_scopes: BTreeMap<String, Vec<Addr>> = BTreeMap::from([(
+            "default".to_string(),
+            vec![sdk_addr.clone()],
+        )]);
+        if !kits.is_empty() {
+            rootfs_scopes.insert("kits".to_string(), kits.to_vec());
+        }
         transforms.insert(
             rootfs_addr.clone(),
             Element::builder()
                 .addr(rootfs_addr.clone())
                 .kind("variant-rootfs")
                 .environment(sdk_env.clone())
-                .source(SourceMap::Unresolved(BTreeMap::from([(
-                    "default".to_string(),
-                    vec![sdk_addr.clone()],
-                )])))
+                .source(SourceMap::Unresolved(rootfs_scopes))
                 .config(base_options.clone())
                 .build(),
         );
@@ -237,9 +318,19 @@ impl Variant {
 
     /// Compose the `VariantImageOptions`-shaped JSON block used by
     /// every stage's element.
+    ///
+    /// Kits are intentionally absent here: they flow through the
+    /// rootfs element's `source` field as `kit-image` sources, not
+    /// through the config-side dep list. See `to_edo`'s doc-comment.
+    ///
+    /// - `all_included` is the full unfiltered `included-packages`
+    ///   name list (both in-repo and kit-supplied). Emitted verbatim
+    ///   under the `included-packages` key as a flat `Vec<String>`.
+    /// - `packages` is the *filtered* list of `//packages/<name>/rpm`
+    ///   transform addresses (in-repo only).
     fn base_options(
         &self,
-        kits: &[Addr],
+        all_included: &[String],
         packages: &[Addr],
         guest_images: &[Addr],
     ) -> BTreeMap<String, Value> {
@@ -249,8 +340,11 @@ impl Variant {
         if let Some(arch) = &self.arch {
             cfg.insert("arch".to_string(), json!(arch));
         }
+        if let Some(arches) = &self.supported_arches {
+            cfg.insert("supported-arches".to_string(), json!(arches));
+        }
         if let Some(fmt) = &self.image.format {
-            cfg.insert("image-format".to_string(), json!(fmt));
+            cfg.insert("image-format".to_string(), json!(fmt.to_string()));
         }
         if let Some(plan) = &self.image.partition_plan {
             cfg.insert("partition-plan".to_string(), json!(plan));
@@ -261,10 +355,12 @@ impl Variant {
         if let Some(size) = self.image.data_image_size_gib {
             cfg.insert("data-image-size-gib".to_string(), json!(size));
         }
-        if let Some(size) = self.image.os_image_publish_size_gib {
+        // A single user-facing `publish-image-size-hint-gib` is
+        // broadcast to both fields the transform side still consumes
+        // (`transform/variant/layout.rs::image_layout` treats them as
+        // one hint via `.or()` fallback).
+        if let Some(size) = self.image.publish_image_size_hint_gib {
             cfg.insert("os-image-publish-size-gib".to_string(), json!(size));
-        }
-        if let Some(size) = self.image.data_image_publish_size_gib {
             cfg.insert("data-image-publish-size-gib".to_string(), json!(size));
         }
         cfg.insert(
@@ -283,20 +379,12 @@ impl Variant {
                 json!(&self.image.features),
             );
         }
-        if !self.included_packages.packages.is_empty() {
-            cfg.insert(
-                "included-packages".to_string(),
-                json!({ "packages": &self.included_packages.packages }),
-            );
-        }
-        cfg.insert(
-            "kits".to_string(),
-            json!(
-                kits.iter()
-                    .map(|a| a.to_string())
-                    .collect::<Vec<_>>()
-            ),
-        );
+        // Always emit `included-packages` as a flat `Vec<String>` (an
+        // empty array when the variant declares none). Downstream
+        // consumers (`VariantImageOptions::included_packages`) rely on
+        // the field being a plain string list rather than a nested
+        // `{ packages: [...] }` block.
+        cfg.insert("included-packages".to_string(), json!(all_included));
         cfg.insert(
             "packages".to_string(),
             json!(
@@ -319,26 +407,26 @@ impl Variant {
     }
 }
 
-/// Return a copy of the base config with `kits`, `packages`, and
-/// `guest-images` set to empty arrays.
+/// Return a copy of the base config with `packages`, `guest-images`,
+/// and `included-packages` set to empty arrays.
 ///
 /// The disk, grub, and image stages don't need to see those dep
 /// addresses (they take single upstream-stage addresses instead), and
 /// their `TransformImpl::depends()` iterates over the options'
-/// kits/packages/guest-images fields — so we strip them here to keep
+/// packages/guest-images fields — so we strip them here to keep
 /// each stage's `depends()` accurate to the transform-graph shape.
+///
+/// `included-packages` is also zeroed: only the rootfs stage will
+/// hand the name list to `dnf install` (see `to_edo`'s doc-comment).
+///
+/// Kits are not represented in the config map at all; they live on
+/// the rootfs element's `source` field only.
 fn strip_deps(base: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
     let mut out = base.clone();
-    out.insert("kits".to_string(), json!(Vec::<String>::new()));
     out.insert("packages".to_string(), json!(Vec::<String>::new()));
     out.insert("guest-images".to_string(), json!(Vec::<String>::new()));
+    out.insert("included-packages".to_string(), json!(Vec::<String>::new()));
     out
-}
-
-// Silence unused-import warning when BTreeSet is only referenced in tests below.
-#[allow(dead_code)]
-fn _unused_set_import() -> BTreeSet<String> {
-    BTreeSet::new()
 }
 
 #[cfg(test)]
@@ -349,6 +437,29 @@ mod tests {
         toml::from_str(toml_str).expect("valid variant config")
     }
 
+    fn kits(addrs: &[&str]) -> Vec<Addr> {
+        addrs.iter().map(|a| Addr::parse(a).unwrap()).collect()
+    }
+
+    /// Build a `BTreeSet` of in-repo package short names — the same
+    /// shape the packages walk produces from each `[package].name`.
+    fn pkgs(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Read the unresolved-side scope table from an `Element`. Every
+    /// element this emitter builds is pre-resolution, so a
+    /// `Resolved` variant here would be a bug.
+    fn unresolved_scopes(elem: &Element) -> BTreeMap<String, Vec<Addr>> {
+        match elem.source.as_ref() {
+            Some(SourceMap::Unresolved(table)) => table.clone(),
+            Some(SourceMap::Resolved(_)) => {
+                panic!("emitter should produce Unresolved source maps")
+            }
+            None => BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn emits_four_transforms_at_expected_addresses() {
         let v = parse(
@@ -356,16 +467,15 @@ mod tests {
 name = "aws-k8s-1.29"
 version = "0.1.0"
 
-[[kit]]
-addr = "//kits/bottlerocket/core-kit"
-
 [image]
 format = "raw"
 partition-plan = "split"
 "#,
         );
         let namespace = Addr::parse("//variants").unwrap();
-        let schema = v.to_edo(&namespace).expect("to_edo");
+        let schema = v
+            .to_edo(&namespace, &kits(&["//kits/bottlerocket/core-kit"]), &pkgs(&[]))
+            .expect("to_edo");
         let addrs: Vec<String> =
             schema.transforms().keys().map(|a| a.to_string()).collect();
         assert!(addrs.contains(&"//variants/aws-k8s-1.29/rootfs".to_string()));
@@ -382,7 +492,9 @@ name = "x"
 version = "0.1.0"
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
         let by_kind: BTreeMap<String, String> = schema
             .transforms()
             .iter()
@@ -402,7 +514,9 @@ name = "x"
 version = "0.1.0"
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
         let disk = schema
             .transforms()
             .get(&Addr::parse("//variants/x/disk").unwrap())
@@ -434,49 +548,291 @@ version = "0.1.0"
     }
 
     #[test]
-    fn kits_and_packages_only_appear_on_rootfs_stage() {
+    fn packages_only_appear_on_rootfs_stage() {
         let v = parse(
             r#"
 name = "x"
 version = "0.1.0"
 
-[[kit]]
-addr = "//kits/bottlerocket/core-kit"
-
 [included-packages]
 packages = ["pkg-e"]
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        // `pkg-e` is treated as in-repo for this test so the emitter
+        // resolves it to a `//packages/pkg-e/rpm` transform dep.
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &kits(&["//kits/bottlerocket/core-kit"]),
+                &pkgs(&["pkg-e"]),
+            )
+            .unwrap();
         let rootfs = schema
             .transforms()
             .get(&Addr::parse("//variants/x/rootfs").unwrap())
             .unwrap();
-        let kits = rootfs.config.get("kits").unwrap().as_array().unwrap();
-        assert_eq!(kits.len(), 1);
         let packages = rootfs.config.get("packages").unwrap().as_array().unwrap();
         assert_eq!(packages.len(), 1);
         assert_eq!(packages[0].as_str(), Some("//packages/pkg-e/rpm"));
 
-        // The other stages have empty kits/packages so their
-        // `depends()` doesn't return spurious edges.
+        // Full name list flows through the flat `included-packages`
+        // config field on the rootfs stage.
+        let included = rootfs
+            .config
+            .get("included-packages")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(included.len(), 1);
+        assert_eq!(included[0].as_str(), Some("pkg-e"));
+
+        // Kits never appear in any stage's config map — they flow
+        // through the rootfs element's `source` field instead.
+        for stage in ["rootfs", "disk", "grub"] {
+            let elem = schema
+                .transforms()
+                .get(&Addr::parse(&format!("//variants/x/{stage}")).unwrap())
+                .unwrap();
+            assert!(
+                elem.config.get("kits").is_none(),
+                "stage {stage} must not carry a config-side `kits` field",
+            );
+        }
+        let image_elem = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        assert!(image_elem.config.get("kits").is_none());
+
+        // The non-rootfs stages have empty packages and empty
+        // included-packages so their `depends()` doesn't return
+        // spurious edges and dnf on downstream stages sees nothing.
         for stage in ["disk", "grub"] {
             let elem = schema
                 .transforms()
                 .get(&Addr::parse(&format!("//variants/x/{stage}")).unwrap())
                 .unwrap();
-            let kits = elem.config.get("kits").unwrap().as_array().unwrap();
-            assert!(kits.is_empty(), "stage {stage} should have empty kits");
-            let pkgs = elem.config.get("packages").unwrap().as_array().unwrap();
-            assert!(pkgs.is_empty(), "stage {stage} should have empty packages");
+            let pkgs_arr = elem.config.get("packages").unwrap().as_array().unwrap();
+            assert!(pkgs_arr.is_empty(), "stage {stage} should have empty packages");
+            let included_arr = elem
+                .config
+                .get("included-packages")
+                .unwrap()
+                .as_array()
+                .unwrap();
+            assert!(
+                included_arr.is_empty(),
+                "stage {stage} should have empty included-packages",
+            );
         }
-        // The finalizer also has empty kits/packages.
-        let image = schema
+    }
+
+    /// Names that don't match any in-repo package are dropped from
+    /// the transform-graph deps but still flow through the config's
+    /// `included-packages` list. This is the exact failure mode the
+    /// bug fix targets.
+    #[test]
+    fn kit_supplied_packages_do_not_become_transform_addrs() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[included-packages]
+packages = ["release", "kernel-6.18"]
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &kits(&["//kits/bottlerocket/core-kit"]),
+                &pkgs(&[]),
+            )
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        let packages = rootfs.config.get("packages").unwrap().as_array().unwrap();
+        assert!(
+            packages.is_empty(),
+            "kit-supplied names must not synthesise `//packages/<name>/rpm` addrs; got {packages:?}",
+        );
+        let included: Vec<&str> = rootfs
+            .config
+            .get("included-packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(included, vec!["release", "kernel-6.18"]);
+    }
+
+    /// A mixed list splits: in-repo names become transform deps,
+    /// kit-supplied names don't, and the full unfiltered list still
+    /// reaches the rootfs config for downstream dnf.
+    #[test]
+    fn mixed_in_repo_and_kit_packages_split_correctly() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[included-packages]
+packages = ["release", "settings-defaults"]
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &[],
+                &pkgs(&["settings-defaults"]),
+            )
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+
+        // Only the in-repo name becomes a transform dep.
+        let packages: Vec<&str> = rootfs
+            .config
+            .get("packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(packages, vec!["//packages/settings-defaults/rpm"]);
+
+        // Full unfiltered list appears in `included-packages`.
+        let included: Vec<&str> = rootfs
+            .config
+            .get("included-packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(included, vec!["release", "settings-defaults"]);
+    }
+
+    /// Regression guard: when the variant declares no included
+    /// packages at all, the rootfs config still carries an
+    /// `included-packages` key with an empty array (the transform's
+    /// deserializer defaults to `Vec::new()` either way, but the
+    /// present-but-empty shape is what we explicitly emit).
+    #[test]
+    fn included_packages_absent_leaves_config_empty_or_off() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        assert!(rootfs.config.get("packages").unwrap().as_array().unwrap().is_empty());
+        assert!(
+            rootfs
+                .config
+                .get("included-packages")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Kits are attached to the rootfs element under the `"kits"`
+    /// source scope; no other stage carries a kit source. The SDK
+    /// stays under `"default"`.
+    #[test]
+    fn kits_appear_on_rootfs_source_scope_not_config() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let project_kits = kits(&[
+            "//kits/bottlerocket/core-kit",
+            "//kits/my-vendor/extra-3-kit",
+        ]);
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &project_kits, &pkgs(&[]))
+            .unwrap();
+
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        let source_map = unresolved_scopes(rootfs);
+
+        // SDK still under `default`, unchanged.
+        let default_scope = source_map.get("default").expect("default scope present");
+        assert_eq!(default_scope.len(), 1);
+        assert_eq!(default_scope[0].to_string(), "//bottlerocket-sdk");
+
+        // Kits under `kits`, in the order supplied by the caller.
+        let kits_scope = source_map.get("kits").expect("kits scope present");
+        let kit_addrs: Vec<String> =
+            kits_scope.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            kit_addrs,
+            vec![
+                "//kits/bottlerocket/core-kit".to_string(),
+                "//kits/my-vendor/extra-3-kit".to_string(),
+            ]
+        );
+
+        // Non-rootfs stages carry no `kits` scope.
+        for stage in ["disk", "grub"] {
+            let elem = schema
+                .transforms()
+                .get(&Addr::parse(&format!("//variants/x/{stage}")).unwrap())
+                .unwrap();
+            assert!(
+                !unresolved_scopes(elem).contains_key("kits"),
+                "stage {stage} must not carry a kits source scope",
+            );
+        }
+        let image_elem = schema
             .transforms()
             .get(&Addr::parse("//variants/x").unwrap())
             .unwrap();
-        let kits = image.config.get("kits").unwrap().as_array().unwrap();
-        assert!(kits.is_empty());
+        assert!(!unresolved_scopes(image_elem).contains_key("kits"));
+    }
+
+    /// Regression guard: an empty project-kit slice must not emit an
+    /// empty `"kits"` scope on the rootfs element.
+    #[test]
+    fn no_kit_scope_emitted_when_project_has_no_kits() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        let source_map = unresolved_scopes(rootfs);
+        assert!(!source_map.contains_key("kits"));
+        assert!(source_map.contains_key("default"));
     }
 
     #[test]
@@ -488,7 +844,9 @@ version = "0.1.0"
 kernel-parameters = ["quiet", "console=ttyS0"]
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
         for stage in ["rootfs", "disk", "grub"] {
             let elem = schema
                 .transforms()
@@ -516,7 +874,9 @@ uefi-secure-boot = true
 first-party-stack = true
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
         let grub = schema
             .transforms()
             .get(&Addr::parse("//variants/x/grub").unwrap())
@@ -539,12 +899,206 @@ name = "aws-k8s-1.29"
 version = "0.1.0"
 "#,
         );
-        let schema = v.to_edo(&Addr::parse("//variants").unwrap()).unwrap();
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
         let finalizer_addr = Addr::parse("//variants/aws-k8s-1.29").unwrap();
         let elem = schema
             .transforms()
             .get(&finalizer_addr)
             .expect("finalizer at unchanged top-level address");
         assert_eq!(elem.kind, "variant-image");
+    }
+
+    #[test]
+    fn kits_come_from_caller_slice_not_variant_toml() {
+        // The variant.toml carries no `[[kit]]` block. Kits flow in
+        // via `Variant::to_edo`'s `kits` argument, resolved by
+        // `config/mod.rs::Config::variant_toml` from the project-level
+        // `[[kit]]` list, and land on the rootfs element's `"kits"`
+        // source scope (not in the config JSON).
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let project_kits = kits(&[
+            "//kits/bottlerocket/core-kit",
+            "//kits/my-vendor/extra-3-kit",
+        ]);
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &project_kits, &pkgs(&[]))
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        let source_map = unresolved_scopes(rootfs);
+        let ks: Vec<String> = source_map
+            .get("kits")
+            .expect("kits scope present")
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(
+            ks,
+            vec![
+                "//kits/bottlerocket/core-kit".to_string(),
+                "//kits/my-vendor/extra-3-kit".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn variant_kit_block_is_a_hard_parse_error() {
+        // Legacy `[[kit]]` block must not silently deserialize into
+        // anything — `deny_unknown_fields` catches it.
+        let err = toml::from_str::<Variant>(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[[kit]]
+addr = "//kits/bottlerocket/core-kit"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("kit"),
+            "expected error to mention the unknown `kit` field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn supported_arches_are_carried_on_every_stage_when_set() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+supported-arches = ["x86_64", "aarch64"]
+"#,
+        );
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
+        for stage in ["rootfs", "disk", "grub"] {
+            let elem = schema
+                .transforms()
+                .get(&Addr::parse(&format!("//variants/x/{stage}")).unwrap())
+                .unwrap();
+            let arches: Vec<&str> = elem
+                .config
+                .get("supported-arches")
+                .unwrap_or_else(|| panic!("stage {stage} missing supported-arches"))
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(arches, vec!["x86_64", "aarch64"], "stage {stage}");
+        }
+    }
+
+    #[test]
+    fn supported_arches_absent_leaves_field_off() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        assert!(
+            rootfs.config.get("supported-arches").is_none(),
+            "field must be absent (not null) when unset"
+        );
+    }
+
+    #[test]
+    fn publish_size_hint_is_broadcast_to_both_transform_fields() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+publish-image-size-hint-gib = 22
+"#,
+        );
+        let schema = v
+            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+        assert_eq!(
+            rootfs
+                .config
+                .get("os-image-publish-size-gib")
+                .and_then(|v| v.as_u64()),
+            Some(22)
+        );
+        assert_eq!(
+            rootfs
+                .config
+                .get("data-image-publish-size-gib")
+                .and_then(|v| v.as_u64()),
+            Some(22)
+        );
+    }
+
+    #[test]
+    fn image_format_accepts_all_four_variants() {
+        for fmt in ["raw", "vmdk", "qcow2", "eif"] {
+            let toml = format!(
+                r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "{fmt}"
+"#
+            );
+            let v = parse(&toml);
+            let schema = v
+                .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+                .unwrap();
+            let rootfs = schema
+                .transforms()
+                .get(&Addr::parse("//variants/x/rootfs").unwrap())
+                .unwrap();
+            assert_eq!(
+                rootfs.config.get("image-format").and_then(|v| v.as_str()),
+                Some(fmt),
+                "format={fmt}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_format_rejects_bogus_values() {
+        let err = toml::from_str::<Variant>(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "bogus"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("bogus")
+                || err.to_string().to_lowercase().contains("variant"),
+            "expected format-enum error, got: {err}"
+        );
     }
 }

@@ -8,7 +8,7 @@ here documents the TOML surface that new twoliter reads.
 | [`twoliter-toml.md`](twoliter-toml.md) | `twoliter.rs` (partial). |
 | [`package-toml.md`](package-toml.md) | `package.rs` (partial). |
 | [`kit-toml.md`](kit-toml.md) | `kit.rs` (partial). |
-| [`variant-toml.md`](variant-toml.md) | Not yet — needs adding. |
+| [`variant-toml.md`](variant-toml.md) | `variant.rs`. |
 | [`overrides.md`](overrides.md) | `overrides.rs` — `Twoliter.override.toml` overlay + `--override`/`--vendor` flags. |
 | [`edo-toml-merge.md`](edo-toml-merge.md) | `mod.rs::edo_toml` — already implemented. |
 
@@ -24,7 +24,7 @@ Loading rules (from `src/config/mod.rs::Config::load`):
 1. Read `<root>/Twoliter.toml`.
 2. Walk `<root>/packages/*/` for `package.toml`.
 3. Walk `<root>/kits/*/` for `kit.toml`.
-4. Walk `<root>/variants/*/` for `variant.toml`. **(Not yet implemented.)**
+4. Walk `<root>/variants/*/` for `variant.toml`.
 5. In each directory, merge any adjacent `edo.toml` as an escape hatch for
    raw edo schema.
 
@@ -50,7 +50,7 @@ pub enum ConfigType {
     Project(Twoliter),
     Package(Package),
     Kit(Kit),
-    // Variant(Variant),  <-- add
+    Variant(Variant),
 }
 ```
 

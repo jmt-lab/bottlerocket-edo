@@ -1,6 +1,7 @@
 repos/
 kits/
 packages/
+variants/
 .flox/log
 .flox/run
 **/__pycache__

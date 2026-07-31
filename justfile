@@ -6,6 +6,120 @@ setup:
 clone kit:
     git clone https://github.com/{{github}}/{{kit}}.git repos/{{kit}}
 
+# Generate `variants/<variant>/variant.toml` files describing each
+# bottlerocket variant. Each source `repos/bottlerocket/variants/<v>/Cargo.toml`
+# is translated into an equivalent twoliter-next `variant.toml` at
+# `variants/<v>/variant.toml`.
+_variant-toml:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source="repos/bottlerocket"
+    version="$(tq --raw .version < "${source}/Release.toml")"
+
+    for cargo_toml in "${source}"/variants/*/Cargo.toml; do
+        variant_dir="$(dirname "${cargo_toml}")"
+        variant="$(basename "${variant_dir}")"
+        element="variants/${variant}"
+        mkdir -p "${element}"
+
+        echo "converting variant ${variant}"
+
+        # Slurp the whole Cargo.toml as JSON for easy jq queries.
+        cargo_json="$(tq -o json . < "${cargo_toml}")"
+        bv="$(jq -c '.package.metadata["build-variant"] // {}' <<< "${cargo_json}")"
+
+        image_format="$(jq --raw-output '.["image-format"] // empty' <<< "${bv}")"
+        partition_plan="$(jq --raw-output '.["image-layout"]["partition-plan"] // empty' <<< "${bv}")"
+        os_size_gib="$(jq --raw-output '.["image-layout"]["os-image-size-gib"] // empty' <<< "${bv}")"
+        data_size_gib="$(jq --raw-output '.["image-layout"]["data-image-size-gib"] // empty' <<< "${bv}")"
+        # The current variant.toml schema (`config/variant.rs::VariantImageBlock`)
+        # collapses the old separate `os-image-publish-size-gib` and
+        # `data-image-publish-size-gib` into a single hint
+        # `publish-image-size-hint-gib`. Prefer the OS value if both are set.
+        os_pub_size_gib="$(jq --raw-output '.["image-layout"]["os-image-publish-size-gib"] // empty' <<< "${bv}")"
+        data_pub_size_gib="$(jq --raw-output '.["image-layout"]["data-image-publish-size-gib"] // empty' <<< "${bv}")"
+        publish_size_hint_gib="${os_pub_size_gib:-${data_pub_size_gib}}"
+
+        supported_arches_json="$(jq -c '.["supported-arches"] // []' <<< "${bv}")"
+        features_json="$(jq -c '.["image-features"] // {}' <<< "${bv}")"
+        kernel_params_json="$(jq -c '.["kernel-parameters"] // []' <<< "${bv}")"
+        included_packages_json="$(jq -c '.["included-packages"] // []' <<< "${bv}")"
+
+        {
+            echo 'schema-version = "3"'
+            echo
+            echo '[variant]'
+            echo "name = \"${variant}\""
+            echo "version = \"${version}\""
+
+            # supported-arches (only emit if the source declares it; absent =
+            # any arch, per `config/variant.rs::Variant::supported_arches`).
+            n_arch="$(jq 'length' <<< "${supported_arches_json}")"
+            if [ "${n_arch}" -gt 0 ]; then
+                printf 'supported-arches = ['
+                for i in $(seq 0 $((n_arch - 1))); do
+                    [ "${i}" -gt 0 ] && printf ', '
+                    a="$(jq --raw-output ".[${i}]" <<< "${supported_arches_json}")"
+                    printf '"%s"' "${a}"
+                done
+                echo ']'
+            fi
+
+            # kernel-parameters (always emitted; empty array is fine).
+            printf 'kernel-parameters = ['
+            n_kp="$(jq 'length' <<< "${kernel_params_json}")"
+            if [ "${n_kp}" -gt 0 ]; then
+                echo
+                for i in $(seq 0 $((n_kp - 1))); do
+                    p="$(jq --raw-output ".[${i}]" <<< "${kernel_params_json}")"
+                    printf '    "%s",\n' "${p}"
+                done
+            fi
+            echo ']'
+
+            # NOTE: no `[[variant.kit]]` block. The current variant schema
+            # (`config/variant.rs::Variant`) has no `kit` field and rejects
+            # unknown keys (`deny_unknown_fields`); every variant implicitly
+            # depends on every project-level `[[kit]]` declared in
+            # `Twoliter.toml` (see `config/mod.rs::Config::variant_toml`).
+
+            # image sub-table: only emit if at least one field is set,
+            # otherwise the parser would see an empty section header.
+            if [ -n "${image_format}${partition_plan}${os_size_gib}${data_size_gib}${publish_size_hint_gib}" ]; then
+                echo
+                echo '[variant.image]'
+                [ -n "${image_format}" ]           && echo "format = \"${image_format}\""
+                [ -n "${partition_plan}" ]         && echo "partition-plan = \"${partition_plan}\""
+                [ -n "${os_size_gib}" ]            && echo "os-image-size-gib = ${os_size_gib}"
+                [ -n "${data_size_gib}" ]          && echo "data-image-size-gib = ${data_size_gib}"
+                [ -n "${publish_size_hint_gib}" ]  && echo "publish-image-size-hint-gib = ${publish_size_hint_gib}"
+            fi
+
+            # image-features sub-table (only emit if non-empty).
+            n_feat="$(jq 'length' <<< "${features_json}")"
+            if [ "${n_feat}" -gt 0 ]; then
+                echo
+                echo '[variant.image.features]'
+                # Emit in stable key order.
+                jq --raw-output 'to_entries | sort_by(.key) | .[] | "\(.key) = \(.value)"' \
+                    <<< "${features_json}"
+            fi
+
+            # included-packages sub-table (only emit if non-empty).
+            n_pkg="$(jq 'length' <<< "${included_packages_json}")"
+            if [ "${n_pkg}" -gt 0 ]; then
+                echo
+                echo '[variant.included-packages]'
+                echo 'packages = ['
+                for i in $(seq 0 $((n_pkg - 1))); do
+                    p="$(jq --raw-output ".[${i}]" <<< "${included_packages_json}")"
+                    printf '    "%s",\n' "${p}"
+                done
+                echo ']'
+            fi
+        } > "${element}/variant.toml"
+    done
+
 # Generate `kits/<kit>/kit.toml` describing the kit and its package list.
 _kit-toml kit:
     #!/usr/bin/env bash
@@ -245,9 +359,16 @@ _sync-packages kit:
         just sync-package {{kit}} "${package}"
     done
 
-sync kit:
+sync-kit kit:
     @rm -rf kits/{{kit}}
     @echo "creating kit.toml"
     @just _kit-toml {{kit}}
     @echo "creating package.toml files"
     @just _sync-packages {{kit}}
+
+sync-bob:
+    @rm -rf variants/*
+    @echo "creating variant.tomls"
+    @just _variant-toml
+    @echo "creating package.toml files"
+    @just _sync-packages bottlerocket

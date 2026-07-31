@@ -50,15 +50,22 @@ pub struct VariantImageOptions {
     #[serde(default)]
     pub image_features: SerializableFeatures,
 
-    /// The `[variant.included-packages]` sub-table.
+    /// Full unfiltered list of package short names from the source
+    /// `[variant.included-packages].packages` block.
+    ///
+    /// Includes both in-repo names (which also appear resolved in
+    /// [`Self::packages`] as `//packages/<name>/rpm` transform
+    /// addresses) and kit-supplied names (which do not — their RPMs
+    /// arrive via the rootfs element's `kits` source scope).
+    ///
+    /// **No transform reads this field today.** The intended future
+    /// consumer is a switch of `crate::image::rpm_install::install_rpms`
+    /// from `rpm -iv <every-rpm-in-dir>` to `dnf install <name-list>`,
+    /// at which point this list is what dnf will select from the
+    /// union of RPMs in `deps/rpms/`. Wiring it through now so the
+    /// switch is a purely local change.
     #[serde(default)]
-    pub included_packages: IncludedPackages,
-
-    /// The set of kits (as edo transform addresses). The
-    /// config-generation layer resolves each `[[variant.kit]]` entry
-    /// to its transform address and passes them here.
-    #[serde(default)]
-    pub kits: Vec<Addr>,
+    pub included_packages: Vec<String>,
 
     /// Extra RPM packages (transform addresses, one per rpm build).
     #[serde(default)]
@@ -68,6 +75,14 @@ pub struct VariantImageOptions {
     /// rootfs at `/local/guest-images/<arch>-<name>/<version>/`.
     #[serde(default)]
     pub guest_images: Vec<Addr>,
+
+    /// Arches this variant is allowed to build on. `None` = any arch.
+    /// TODO: enforce at build time — old-twoliter's equivalent lives
+    /// in `old-twoliter/tools/buildsys/src/manifest.rs::SupportedArch`
+    /// and `validate_image_features`. Right now this field is carried
+    /// on the wire but no transform reads it.
+    #[serde(default)]
+    pub supported_arches: Option<Vec<String>>,
 }
 
 pub(crate) fn default_image_format() -> ImageFormat {
@@ -76,14 +91,6 @@ pub(crate) fn default_image_format() -> ImageFormat {
 
 pub(crate) fn default_partition_plan() -> PartitionPlan {
     crate::image::DEFAULT_PARTITION_PLAN
-}
-
-/// Wire-format for the `[variant.included-packages]` block.
-#[derive(Deserialize, Debug, Default, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub struct IncludedPackages {
-    #[serde(default)]
-    pub packages: Vec<String>,
 }
 
 /// Deserializable feature-bitset mirroring [`ImageFeatures`] with a
@@ -160,9 +167,10 @@ mod tests {
     #[test]
     fn options_deserialize_from_doc_example_toml() {
         // Doc's TOML surface, trimmed to the fields the transform
-        // reads directly (kit references get resolved to `Addr`s by
-        // the config-generation layer, so we substitute plain addrs
-        // rather than the `[[variant.kit]]` table form).
+        // reads directly. Kits are not part of this wire type — they
+        // flow into the rootfs element as `kit-image` sources under
+        // the `"kits"` scope, and are consumed by
+        // `VariantRootfsTransform::new` via `ctx.add_source(...)`.
         let toml = r#"
 name = "aws-k8s-1.29"
 version = "0.1.0"
@@ -177,8 +185,8 @@ data-image-publish-size-gib = 20
 
 kernel-parameters = ["quiet", "console=ttyS0"]
 
-kits = ["//kits/my-vendor/extra-3-kit/build"]
 packages = ["//packages/pkg-e/rpm"]
+included-packages = ["pkg-e", "kernel-6.18"]
 
 [image-features]
 grub-set-private-var = true
@@ -189,9 +197,6 @@ in-place-updates = false
 encrypted-storage = false
 erofs-root-partition = false
 first-party-stack = true
-
-[included-packages]
-packages = ["pkg-e"]
 "#;
         let opts: VariantImageOptions = toml::from_str(toml).expect("parse");
         assert_eq!(opts.name, "aws-k8s-1.29");
@@ -200,8 +205,11 @@ packages = ["pkg-e"]
         assert!(opts.image_features.uefi_secure_boot);
         assert!(opts.image_features.first_party_stack);
         assert_eq!(opts.kernel_parameters, vec!["quiet", "console=ttyS0"]);
-        assert_eq!(opts.kits.len(), 1);
         assert_eq!(opts.packages.len(), 1);
+        assert_eq!(
+            opts.included_packages,
+            vec!["pkg-e".to_string(), "kernel-6.18".to_string()],
+        );
         assert!(opts.guest_images.is_empty());
     }
 
@@ -215,7 +223,8 @@ version = "0.0.1"
         let opts: VariantImageOptions = toml::from_str(toml).expect("parse");
         assert_eq!(opts.image_format, ImageFormat::Raw);
         assert_eq!(opts.partition_plan, PartitionPlan::Split);
-        assert!(opts.kits.is_empty());
+        assert!(opts.packages.is_empty());
+        assert!(opts.included_packages.is_empty());
         // Default first-party-stack is true per doc §Fields.
         assert!(opts.image_features.first_party_stack);
     }

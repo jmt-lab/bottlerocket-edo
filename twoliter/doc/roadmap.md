@@ -57,7 +57,6 @@ whole port.
   `kit.rs` already use.
 - [`config/variant-toml`](config/variant-toml.md) — `variant.toml` schema.
 - [`cli/build`](cli/build.md) `twoliter build variant` subcommand.
-- Extend [`config/mod.rs`](../src/config/mod.rs) to walk `variants/*/`.
 
 Milestone: `twoliter build variant aws-k8s-1.29` produces the same
 `os.img.lz4`, `data.img.lz4`, etc. that old twoliter's `build-variant`
