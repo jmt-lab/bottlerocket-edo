@@ -218,10 +218,27 @@ pub async fn build_metadata_rpm(
         .await?;
     vfs.copy(&rpmmacros_src, "/root/.rpmmacros").await?;
 
-    // Step 3: write spec.
+    // Step 3: write spec, prepended with `%bcond_*` declarations that
+    // encode this variant's image-features toggle set.
+    //
+    // Old-twoliter (see `old-twoliter/twoliter/embedded/build.Dockerfile`
+    // "rpm-macros-and-bconds" stage) prepends
+    // `%bcond_without <feat>` lines to the spec for every feature that
+    // is ON, and omits the line for features that are OFF. `%{with
+    // <feat>}` then resolves as expected inside the spec.
+    //
+    // Using `--with` / `--without` on the rpmbuild command line
+    // *should* be equivalent, but in practice it wasn't picked up in
+    // this crate's rpmbuild invocation (metadata RPM ended up
+    // providing `no-erofs-root-partition` even when we passed
+    // `--with erofs_root_partition`). Prepending bconds directly to
+    // the spec matches the reference implementation and side-steps
+    // that issue.
+    let bconds = render_metadata_bconds(inputs.features);
+    let mut spec_bytes = bconds.into_bytes();
+    spec_bytes.extend_from_slice(crate::image::METADATA_SPEC.as_bytes());
     let spec_path = specs_path.join("metadata.spec");
-    vfs.write(&spec_path, crate::image::METADATA_SPEC.as_bytes())
-        .await?;
+    vfs.write(&spec_path, &spec_bytes).await?;
 
     // Step 4: rpmbuild. Args flow through the vfs `execute` as a
     // shell-joined string, so `--define` values that carry spaces
@@ -260,9 +277,9 @@ pub async fn build_metadata_rpm(
         flavor_arg,
     ];
 
-    for tok in render_metadata_rpmbuild_args(inputs.features) {
-        argv.push(tok);
-    }
+    // NOTE: intentionally NOT passing `--with`/`--without` here. The
+    // toggles are encoded as `%bcond_*` lines prepended to the spec
+    // above; that's the reliable path and matches old-twoliter.
     argv.push(format!("{:?}", spec_path));
 
     vfs.command("build_metadata_rpm", "rpmbuild", &argv).await?;
@@ -287,6 +304,27 @@ pub async fn build_metadata_rpm(
     Ok(())
 }
 
+/// Render the `%bcond_*` lines to prepend to `metadata.spec` for a
+/// given [`ImageFeatures`] snapshot.
+///
+/// Semantics match old-twoliter's `generated.bconds`
+/// (`old-twoliter/twoliter/embedded/build.Dockerfile:249-257`): a
+/// single `%bcond_without <feat>` line is emitted for every feature
+/// that is ON; nothing is emitted for features that are OFF (so the
+/// spec's `%{with <feat>}` evaluates to 0 for those).
+///
+/// The returned string always ends with a newline so it can be
+/// concatenated directly with the spec body.
+pub fn render_metadata_bconds(features: &ImageFeatures) -> String {
+    let mut out = String::new();
+    for (feature, name) in RPMBUILD_TOGGLES {
+        if is_on(features, *feature) {
+            out.push_str(&format!("%bcond_without {name}\n"));
+        }
+    }
+    out
+}
+
 /// Convert an [`ImageFeatures`] snapshot into the ordered
 /// `--with FLAG` / `--without FLAG` argument list for `rpmbuild`. Every
 /// feature listed in [`RPMBUILD_TOGGLES`] appears exactly once.
@@ -294,6 +332,12 @@ pub async fn build_metadata_rpm(
 /// Matches the shell's convention: features named in `metadata.spec`
 /// under `%if %{with feature_name}` translate to `--with feature_name`
 /// / `--without feature_name`.
+///
+/// Currently unused — [`build_metadata_rpm`] now prepends
+/// `%bcond_*` lines to the spec instead (see [`render_metadata_bconds`]).
+/// Kept because the pure fn is nice for future callers that want to
+/// invoke rpmbuild directly.
+#[allow(dead_code)]
 pub fn render_metadata_rpmbuild_args(features: &ImageFeatures) -> Vec<String> {
     let mut out = Vec::with_capacity(RPMBUILD_TOGGLES.len() * 2);
     for (flag, on) in metadata_toggles(features) {
@@ -516,6 +560,38 @@ mod tests {
     #[test]
     fn embedded_metadata_spec_is_non_empty() {
         assert!(crate::image::METADATA_SPEC.contains("%{_cross_os}metadata"));
+    }
+
+    #[test]
+    fn bconds_all_off_yields_empty() {
+        // With no features on, no `%bcond_without` lines are emitted;
+        // the spec's `%{with foo}` then defaults to 0 for every feat.
+        let f = ImageFeatures {
+            first_party_stack: false,
+            ..ImageFeatures::default()
+        };
+        assert_eq!(render_metadata_bconds(&f), "");
+    }
+
+    #[test]
+    fn bconds_selected_features_only() {
+        let f = ImageFeatures {
+            erofs_root_partition: true,
+            uefi_secure_boot: true,
+            xfs_data_partition: true,
+            encrypted_storage: true,
+            first_party_stack: true,
+            ..ImageFeatures::default()
+        };
+        let out = render_metadata_bconds(&f);
+        assert!(out.contains("%bcond_without erofs_root_partition\n"));
+        assert!(out.contains("%bcond_without uefi_secure_boot\n"));
+        assert!(out.contains("%bcond_without xfs_data_partition\n"));
+        assert!(out.contains("%bcond_without encrypted_storage\n"));
+        assert!(out.contains("%bcond_without first_party_stack\n"));
+        assert!(!out.contains("fips"));
+        assert!(!out.contains("in_place_updates"));
+        assert!(!out.contains("host_containers"));
     }
 
     #[test]
