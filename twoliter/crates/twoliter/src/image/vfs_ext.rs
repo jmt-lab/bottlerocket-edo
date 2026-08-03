@@ -141,6 +141,30 @@ async fn list_files_inner(
     Ok(parse_find_output(&out))
 }
 
+/// Like [`list_files`], but walks the tree recursively (no `-maxdepth`
+/// cap). Useful when RPMs (or other files) are staged into a nested
+/// layout under a common root — e.g. package transforms extract to
+/// `deps/rpms/Packages/<pkg>/<arch>/*.rpm` and kit image sources extract
+/// to `deps/rpms/Packages/<pkg>/*.rpm`, and callers want the union.
+///
+/// Symlinks are not followed. Returns paths sorted by string order.
+pub async fn list_files_recursive(
+    vfs: &Vfs,
+    dir: impl AsRef<Path>,
+    name_glob: &str,
+) -> Result<Vec<PathBuf>> {
+    let dir_q = shell_quote_path(dir.as_ref());
+    let glob_q = shell_quote(name_glob);
+    let out = vfs
+        .output(
+            "list_files_recursive",
+            "find",
+            &[dir_q.as_str(), "-type", "f", "-name", glob_q.as_str()],
+        )
+        .await?;
+    Ok(parse_find_output(&out))
+}
+
 /// List every entry directly under `dir` (files, directories, and
 /// symlinks). Returns paths sorted by their string representation.
 ///

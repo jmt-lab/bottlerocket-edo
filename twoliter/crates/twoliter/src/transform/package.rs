@@ -68,12 +68,20 @@ impl FromElement for PackageBuildTransform {
             .and_then(|x| x.get_resolved())
             .cloned()
             .unwrap_or_default();
+        // Kit-image sources need the caller's target arch injected as
+        // an OCI `platform` field on the element before we register
+        // the source: the resolver emits the element without one (it
+        // operates on the multi-arch index), and the source would
+        // otherwise fall back to the host arch and cache-collide
+        // across cross-compile targets. See `KitImageSource::get_unique_id`.
+        let target_arch = options.arch.as_deref().unwrap_or(std::env::consts::ARCH);
         let mut kits = Vec::new();
         let mut archives = Vec::new();
         let mut sources = Vec::new();
         if let Some(kit_list) = scope_table.get("kit") {
             for element in kit_list {
-                kits.push(ctx.add_source(element).await?);
+                let scoped = crate::source::apply_target_arch(element, target_arch);
+                kits.push(ctx.add_source(&scoped).await?);
             }
         }
         if let Some(archive_list) = scope_table.get("archives") {

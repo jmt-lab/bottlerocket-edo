@@ -2,7 +2,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use base64::Engine;
 use clap::Parser;
-use edo::{context::Addr, storage::Id};
+use edo::{
+    context::Addr,
+    storage::{Id, MediaType as EdoMediaType},
+    util::Reader,
+};
 use jiff::Timestamp;
 use ocilot::{
     image::Image,
@@ -73,8 +77,18 @@ impl PublishKit {
             if ctx.storage().has_local(&id).await? {
                 let artifact = ctx.storage().safe_open(&id).await?;
 
-                // We want to upload each layer needed for the image
+                // We want to upload each layer needed for the image.
+                //
+                // For every artifact layer we compute two things: the
+                // ocilot media type to declare on the pushed manifest
+                // (derived from the artifact layer's *stored*
+                // compression, so gzip/zstd payloads aren't mislabeled
+                // as uncompressed) and the OCI diff_id (SHA256 of the
+                // *uncompressed* tar bytes) that goes into the image
+                // config's `rootfs.diff_ids`. For uncompressed layers
+                // diff_id == blob digest and we skip the extra read.
                 let mut oci_layers = Vec::new();
+                let mut diff_ids: Vec<String> = Vec::new();
                 for artifact_layer in artifact.layers() {
                     edo::ui_start_task!(
                         subsystem = "kit",
@@ -84,13 +98,21 @@ impl PublishKit {
                         edo::ui::UiTaskStatus::Running,
                         None
                     );
+
+                    let ocilot_media = ocilot_media_type_for(artifact_layer.media_type())
+                        .with_context(|| error::UnsupportedPublishLayerMediaTypeSnafu {
+                            media_type: format!("{:?}", artifact_layer.media_type()),
+                        })?;
+
+                    let compressed_digest = artifact_layer.digest().digest();
+                    let compressed_digest_ref = format!("sha256:{compressed_digest}");
                     let mut reader = ctx.storage().safe_read(artifact_layer).await?;
                     oci_layers.push(
                         if let Some(mut oci_layer) = Layer::create(
                             &uri,
-                            &MediaType::Layer(Compression::None),
+                            &ocilot_media,
                             *artifact_layer.size(),
-                            Some(format!("sha256:{}", artifact_layer.digest().digest())),
+                            Some(compressed_digest_ref.clone()),
                             None,
                         )
                         .await?
@@ -103,12 +125,33 @@ impl PublishKit {
                             oci_layer.layer().await?
                         } else {
                             Layer::builder()
-                                .media_type(MediaType::Layer(Compression::None))
+                                .media_type(ocilot_media.clone())
                                 .size(*artifact_layer.size())
-                                .digest(format!("sha256:{}", artifact_layer.digest().digest()))
+                                .digest(compressed_digest_ref.clone())
                                 .build()
                         },
                     );
+
+                    // diff_id: uncompressed tar digest. For a `Tar(None)`
+                    // layer the compressed bytes *are* the uncompressed
+                    // bytes, so the layer's own digest is the diff_id
+                    // and no extra work is required. For compressed
+                    // layers we open a second reader and stream through
+                    // a decompressor whose SHA256 is exposed via
+                    // `Reader::finish`.
+                    let diff_id = if artifact_layer.media_type().is_compressed() {
+                        let raw_reader = ctx.storage().safe_read(artifact_layer).await?;
+                        let compression = artifact_layer.media_type().compression();
+                        let mut decompress = Reader::with_decompression(raw_reader, &compression);
+                        tokio::io::copy(&mut decompress, &mut tokio::io::sink())
+                            .await
+                            .context(error::IoSnafu)?;
+                        decompress.finish()
+                    } else {
+                        compressed_digest.clone()
+                    };
+                    diff_ids.push(format!("sha256:{diff_id}"));
+
                     edo::ui_update_task!(
                         subsystem = "kit",
                         component = "layer",
@@ -130,10 +173,6 @@ impl PublishKit {
                 });
                 let metadata_bytes = serde_json::to_vec_pretty(&metadata).unwrap();
                 let metadata_str = base64::engine::general_purpose::STANDARD.encode(metadata_bytes);
-                let diff_ids = oci_layers
-                    .iter()
-                    .map(|x| x.digest().strip_prefix("sha256:").unwrap_or(x.digest()))
-                    .collect::<Vec<_>>();
                 // Now we wnat to translate the artifact manifest into two things: the image config, then the image manifest
                 let config = json!({
                     "architecture": &id.arch().unwrap(),
@@ -200,5 +239,91 @@ impl PublishKit {
         }
 
         Ok(())
+    }
+}
+
+/// Map an edo artifact layer's media type to the ocilot media type we
+/// declare on the pushed OCI manifest.
+///
+/// Only `Tar(_)` layers are meaningful in a kit-publish context: kit
+/// artifacts always carry tar payloads (locally-built kits emit
+/// `Tar(None)`; `KitImageSource` mirrors upstream layers as `Tar(_)`
+/// preserving the upstream compression). Any other media type is a
+/// programming error at this call site, so we surface it explicitly
+/// rather than silently mislabel the blob.
+fn ocilot_media_type_for(mt: &EdoMediaType) -> Option<MediaType> {
+    let edo_compression = match mt {
+        EdoMediaType::Tar(c) => c,
+        _ => return None,
+    };
+    let ocilot_compression = match edo_compression {
+        edo::storage::Compression::None => Compression::None,
+        edo::storage::Compression::Gzip => Compression::Gzip,
+        edo::storage::Compression::Bzip2 => Compression::Bzip2,
+        edo::storage::Compression::Lz4 => Compression::Lz4,
+        edo::storage::Compression::Xz => Compression::Xz,
+        edo::storage::Compression::Zstd => Compression::Zstd,
+        // Lzma has no `application/vnd.oci.image.layer.v1.tar.lzma`
+        // in ocilot's serializer; if we ever encounter it we surface
+        // it rather than aliasing to another codec.
+        edo::storage::Compression::Lzma => return None,
+    };
+    Some(MediaType::Layer(ocilot_compression))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use edo::storage::{Compression as EdoCompression, MediaType as EdoMediaType};
+
+    /// Every stored `Tar(compression)` variant must map to the
+    /// matching ocilot layer media type so the pushed manifest
+    /// agrees with the actual blob compression. Non-tar variants must
+    /// return `None` — the caller surfaces them as a hard error.
+    #[test]
+    fn ocilot_media_type_covers_tar_variants() {
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::None)),
+            Some(MediaType::Layer(Compression::None))
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Gzip)),
+            Some(MediaType::Layer(Compression::Gzip))
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Zstd)),
+            Some(MediaType::Layer(Compression::Zstd))
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Bzip2)),
+            Some(MediaType::Layer(Compression::Bzip2))
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Xz)),
+            Some(MediaType::Layer(Compression::Xz))
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Lz4)),
+            Some(MediaType::Layer(Compression::Lz4))
+        );
+    }
+
+    /// Non-tar / unsupported edo media types must surface as `None`
+    /// so we never mislabel a non-tar blob as an OCI tar layer.
+    #[test]
+    fn ocilot_media_type_rejects_non_tar_and_lzma() {
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Tar(EdoCompression::Lzma)),
+            None
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::File(EdoCompression::None)),
+            None
+        );
+        assert_eq!(
+            ocilot_media_type_for(&EdoMediaType::Oci(EdoCompression::None)),
+            None
+        );
+        assert_eq!(ocilot_media_type_for(&EdoMediaType::Manifest), None);
     }
 }

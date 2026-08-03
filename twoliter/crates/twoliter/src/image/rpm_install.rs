@@ -10,13 +10,19 @@ use std::path::{Path, PathBuf};
 use edo::environment::Vfs;
 
 use crate::image::error::{Error, Result};
-use crate::image::vfs_ext::{list_files, shell_quote_path};
+use crate::image::vfs_ext::{list_files_recursive, shell_quote_path};
 
-/// Enumerate every `*.rpm` under `dir` (non-recursive) inside the
-/// environment, sorted. Returns an empty vec when the directory is
-/// empty; errors if the directory itself is missing or unreadable.
+/// Enumerate every `*.rpm` under `dir` recursively inside the
+/// environment, sorted. Returns an empty vec when nothing matches;
+/// errors if the directory itself is missing or unreadable.
+///
+/// The recursive walk is deliberate: package and kit-image sources
+/// extract RPMs into a nested layout (`Packages/<pkg>/[<arch>/]…`)
+/// rather than dropping them flat under the staging root, so a
+/// non-recursive `-maxdepth 1` walk would miss every RPM the transform
+/// staged.
 async fn collect_rpms(vfs: &Vfs, dir: &Path) -> Result<Vec<PathBuf>> {
-    list_files(vfs, dir, "*.rpm").await
+    list_files_recursive(vfs, dir, "*.rpm").await
 }
 
 /// Install every `*.rpm` under `package_dir` into `install_root` via

@@ -117,10 +117,18 @@ impl FromElement for VariantRootfsTransform {
         // `depends()` and don't participate in the transform graph
         // shape — same wire-up as `PackageBuildTransform::new`'s
         // `kit` scope. An empty / missing scope is a valid config.
+        //
+        // The vendor's `resolve` emits the element without a
+        // `platform` field (the resolver operates on the multi-arch
+        // index), so we inject one here derived from the caller's
+        // target arch. Without this the source falls back to the
+        // *host* arch, which is wrong on any cross-compile.
+        let target_arch = options.arch.as_deref().unwrap_or(std::env::consts::ARCH);
         let mut kits = Vec::new();
         if let Some(kit_list) = scope_table.get("kits") {
             for kit_element in kit_list {
-                kits.push(ctx.add_source(kit_element).await?);
+                let scoped = crate::source::apply_target_arch(kit_element, target_arch);
+                kits.push(ctx.add_source(&scoped).await?);
             }
         }
 
@@ -446,12 +454,14 @@ impl TransformImpl for VariantRootfsTransform {
             }
 
             // Enumerate installed RPM names for the metadata layer.
-            // Non-fatal: an empty list is acceptable if the SDK
-            // stage-root path produced no `deps/rpms/*.rpm` (only
-                    // happens in tests).
+            // The walk is recursive because staged RPMs live under a
+            // nested layout (`Packages/<pkg>/[<arch>/]…`), not flat at
+            // the root — mirroring the traversal in
+            // `image::rpm_install::collect_rpms`. Non-fatal: an empty
+            // list is acceptable when no RPMs were staged (tests).
             let mut packaged_rpms: Vec<String> = Vec::new();
             if vfs.try_exists(&rpm_dir).await? {
-                let rpms = crate::image::vfs_ext::list_files(&vfs, &rpm_dir, "*.rpm")
+                let rpms = crate::image::vfs_ext::list_files_recursive(&vfs, &rpm_dir, "*.rpm")
                     .await
                     .context(error::BrImageSnafu)?;
                 for path in rpms {

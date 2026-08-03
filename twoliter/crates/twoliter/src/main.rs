@@ -29,6 +29,10 @@ pub mod error {
         Oci { source: ocilot::error::Error },
         #[snafu(display("no kit located at address {addr}"))]
         NoKit { addr: Addr },
+        #[snafu(display(
+            "cannot publish artifact layer with media type {media_type}: only `Tar(_)` layers are supported"
+        ))]
+        UnsupportedPublishLayerMediaType { media_type: String },
         #[snafu(transparent)]
         Source { source: edo::source::SourceError },
         #[snafu(transparent)]
