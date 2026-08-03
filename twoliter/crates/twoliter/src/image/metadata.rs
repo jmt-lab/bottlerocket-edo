@@ -172,12 +172,37 @@ pub async fn build_metadata_rpm(
         .with_context(|_| VariantNameSnafu)?;
 
     // Step 1: rpmbuild tree.
-    let rpmbuild = inputs.workdir.join("rpmbuild");
-    let specs = rpmbuild.join("SPECS");
-    let rpms = rpmbuild.join("RPMS");
+    //
+    // Every path handed to rpmbuild must be **absolute**. rpmbuild
+    // spawns its own `sh -e` subshells for each phase, and `%mkbuilddir`
+    // `cd`s into `%{_topdir}/BUILD/<name>-<ver>-build` before running
+    // `%prep`; a relative `_topdir` gets resolved from the phase's
+    // cwd rather than from the vfs cwd, and the injected
+    // `%__spec_prep_pre` (see SDK macros' `ln -srnf %{_topdir}/BUILD/sources
+    // %{builddir}/sources`) then fails ENOENT.
+    //
+    // `Vfs::create_dir` returns a child Vfs whose `.path()` is
+    // absolute (post-canonicalize), so we capture the handles rather
+    // than composing PathBufs by hand.
+    let workdir_vfs = vfs.entry(inputs.workdir).await;
+    let rpmbuild_vfs = workdir_vfs.create_dir("rpmbuild").await?;
+    let mut sub_paths = std::collections::HashMap::new();
     for sub in ["BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"] {
-        vfs.create_dir(&rpmbuild.join(sub)).await?;
+        let child = rpmbuild_vfs.create_dir(sub).await?;
+        sub_paths.insert(sub, child.path().to_path_buf());
     }
+    // `BUILD/sources` must exist even for a source-less spec: the
+    // SDK's arch-specific rpm macros inject a `%__spec_prep_pre` that
+    // runs `ln -srnf %{_topdir}/BUILD/sources %{builddir}/sources` at
+    // the top of every `%prep`. Without the dir, ln fails with
+    // ENOENT and %prep exits non-zero. Packages get this dir for
+    // free by copying `src/sources` in; metadata.spec has no sources
+    // so we create the dir empty.
+    rpmbuild_vfs.create_dir("BUILD/sources").await?;
+
+    let rpmbuild_path = rpmbuild_vfs.path().to_path_buf();
+    let specs_path = sub_paths["SPECS"].clone();
+    let rpms_path = sub_paths["RPMS"].clone();
 
     // Step 2: SDK arch-specific rpm macros. Defines `%{_cross_os}`,
     // among other cross-compile macros. Copied to both the workdir's
@@ -189,12 +214,12 @@ pub async fn build_metadata_rpm(
         "/usr/lib/rpm/platform/{}-bottlerocket/macros",
         inputs.arch
     );
-    vfs.copy(&rpmmacros_src, &inputs.workdir.join(".rpmmacros"))
+    vfs.copy(&rpmmacros_src, &workdir_vfs.path().join(".rpmmacros"))
         .await?;
     vfs.copy(&rpmmacros_src, "/root/.rpmmacros").await?;
 
     // Step 3: write spec.
-    let spec_path = specs.join("metadata.spec");
+    let spec_path = specs_path.join("metadata.spec");
     vfs.write(&spec_path, crate::image::METADATA_SPEC.as_bytes())
         .await?;
 
@@ -202,7 +227,7 @@ pub async fn build_metadata_rpm(
     // shell-joined string, so `--define` values that carry spaces
     // must include their own literal double quotes; the same pattern
     // `PackageTransform` uses. See `edo::environment::Vfs::command`.
-    let topdir_arg = format!("--define \"_topdir {:?}\"", rpmbuild);
+    let topdir_arg = format!("--define \"_topdir {:?}\"", rpmbuild_path);
     let target_cpu_arg = format!("--define \"_target_cpu {}\"", inputs.arch);
     let variant_arg = format!("--define \"_cross_variant {}\"", segments.name);
     let platform_arg = format!(
@@ -245,17 +270,17 @@ pub async fn build_metadata_rpm(
     // Step 5: copy the built RPMs to `output_dir`. rpmbuild drops
     // them under `rpmbuild/RPMS/<arch>/`, so we glob the arch
     // subdir the same way `PackageTransform` does its final copy.
-    let copy_cmd = format!(
-        "{:?}/{}/*.rpm",
-        rpms, inputs.arch
-    );
+    let copy_glob = format!("{:?}/{}/*.rpm", rpms_path, inputs.arch);
+    // `output_dir` may be relative; resolve it against the vfs cwd
+    // by walking through `Vfs::entry` (its `.path()` is absolute).
+    let output_dir_abs = vfs.entry(inputs.output_dir).await.path().to_path_buf();
     vfs.command(
         "copy_metadata_rpm",
         "cp",
         &[
             "-r".to_string(),
-            copy_cmd,
-            format!("{:?}", inputs.output_dir),
+            copy_glob,
+            format!("{:?}", output_dir_abs),
         ],
     )
     .await?;
