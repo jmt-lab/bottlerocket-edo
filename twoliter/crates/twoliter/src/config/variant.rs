@@ -73,6 +73,32 @@ pub struct Variant {
     /// The `[variant.included-packages]` sub-table.
     #[serde(default)]
     pub included_packages: IncludedPackagesBlock,
+
+    /// The `[variant.local-packages]` sub-table: names of in-repo
+    /// packages (i.e. those with a `packages/<dir>/package.toml`)
+    /// that should be built into the variant.
+    ///
+    /// Every name here becomes a `//packages/<name>/rpm` transform
+    /// dependency on the rootfs element, plus an entry in the
+    /// dnf-install selection so the RPM is actually installed (not
+    /// just staged in the local repo).
+    ///
+    /// The set is **transitively closed** at emit time via each
+    /// package's `[package].depends` list. Users only need to
+    /// enumerate the top-level packages they care about — reachable
+    /// deps (`storewolf`, `settings-defaults`, …) come along for
+    /// free. Names naming packages not in the project are dropped
+    /// with a warning at emit time (see `Config::walk`).
+    ///
+    /// Rationale: `[variant.included-packages]` is for kit-supplied
+    /// names — their RPMs arrive via the kit-image source scope and
+    /// there is no `//packages/<name>/rpm` transform to depend on.
+    /// Mixing the two in one list forced the emitter to guess which
+    /// bucket a name belongs to; splitting them makes the intent
+    /// explicit and lets the emitter fail loudly when a local name
+    /// is misspelled.
+    #[serde(default)]
+    pub local_packages: LocalPackagesBlock,
 }
 
 fn default_version() -> semver::Version {
@@ -97,6 +123,15 @@ pub struct VariantGuestImageRef {
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct IncludedPackagesBlock {
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+/// The `[variant.local-packages]` sub-table — see the doc comment on
+/// [`Variant::local_packages`].
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct LocalPackagesBlock {
     #[serde(default)]
     pub packages: Vec<String>,
 }
@@ -167,47 +202,42 @@ impl Variant {
     /// `ctx.add_source(...)` into a `Vec<Source>`. Kits never appear
     /// in any stage's `config` map or `depends()` output.
     ///
-    /// **Wire shape for included-packages.** Entries in
-    /// `[variant.included-packages].packages` are package short names.
-    /// They fall into two categories at emit time:
+    /// **Wire shape for included / local packages.** Entries fall into
+    /// two disjoint buckets, sourced from two separate blocks so the
+    /// emitter never has to guess:
     ///
-    /// - **In-repo** names — those present in the `project_packages`
-    ///   set, which the caller
-    ///   ([`crate::config::Config::variant_toml`]) built from every
-    ///   `packages/<dir>/package.toml`'s parsed `Package.name` field
-    ///   during the earlier packages walk. Each in-repo name is
-    ///   emitted as a `//packages/<name>/rpm` transform-graph
-    ///   dependency on the rootfs element (via the config-side
-    ///   `packages` field); `VariantRootfsTransform::stage` then
-    ///   causes those RPMs to build and stage into `deps/rpms/`.
+    /// - **Kit-supplied** names live under
+    ///   `[variant.included-packages].packages`. No transform exists
+    ///   at `//packages/<name>/rpm` for these; their RPMs arrive in
+    ///   `deps/rpms/` through the rootfs element's `kits` source
+    ///   scope. Emitted verbatim into every stage's
+    ///   `included-packages` config field (stripped to empty on
+    ///   non-rootfs stages by `strip_deps`) so
+    ///   `VariantRootfsTransform` can hand them to `dnf install`.
     ///
-    /// - **Kit-supplied** names — everything else. No transform
-    ///   exists at `//packages/<name>/rpm` for these; their RPMs
-    ///   arrive in `deps/rpms/` through the kit-image source scope
-    ///   above. Emitting a phantom transform address for them would
-    ///   fail scheduler resolution, so they're deliberately absent
-    ///   from the transform-graph deps.
+    /// - **In-repo** names live under
+    ///   `[variant.local-packages].packages`. Each becomes a
+    ///   `//packages/<name>/rpm` transform-graph dependency on the
+    ///   rootfs element (via the config-side `packages` field);
+    ///   `VariantRootfsTransform::stage` then causes those RPMs to
+    ///   build and stage into `deps/rpms/`. The set is **transitively
+    ///   closed** here via each package's `[package].depends` list
+    ///   (supplied to this fn as `project_packages: name -> depends`)
+    ///   so a user only enumerates the top-level packages they care
+    ///   about. Every name in the closure is also appended to the
+    ///   dnf install list so it is actually installed, not just
+    ///   staged.
     ///
-    /// Regardless of category, the *full unfiltered* name list is
-    /// also emitted verbatim into the rootfs element's config under
-    /// the `included-packages` key. `VariantRootfsTransform` carries
-    /// it via `VariantImageOptions::included_packages` (a plain code
-    /// span rather than an intra-doc link, since the `transform`
-    /// module is crate-private and not reachable through rustdoc)
-    /// but does not read it today; the intended consumer is a future
-    /// switch of `image::rpm_install::install_rpms` from
-    /// `rpm -iv <every-rpm-in-dir>` to `dnf install <name-list>`.
-    ///
-    /// **Ambiguity.** If a short name matches *both* an in-repo
-    /// package and a kit-supplied RPM, the in-repo one wins here:
-    /// this emitter always emits the transform dep. Whichever RPM
-    /// ends up installed at runtime is resolved by the eventual
-    /// dnf-install step, which is out of scope for this emitter.
+    /// Names in `local-packages` that don't appear as a project
+    /// package are dropped from the transform-dep list (they still
+    /// end up in the install list — dnf can then produce a clear
+    /// "nothing provides" error if the RPM never lands). Names that
+    /// appear in both blocks are deduped in the install list.
     pub fn to_edo(
         &self,
         namespace: &Addr,
         kits: &[Addr],
-        project_packages: &BTreeSet<String>,
+        project_packages: &BTreeMap<String, Vec<String>>,
     ) -> ContextResult<Schema> {
         let variant_addr = namespace.join(&Addr::parse(&self.name)?);
         let rootfs_addr = variant_addr.join(&Addr::parse("rootfs")?);
@@ -220,22 +250,33 @@ impl Variant {
         let sdk_env = Addr::parse("//sdk-isolated")?;
         let sdk_addr = Addr::parse("//bottlerocket-sdk")?;
 
-        // Full unfiltered list — flows verbatim into every stage's
-        // `included-packages` config field (stripped to empty on
-        // non-rootfs stages by `strip_deps`) for future dnf-install
-        // consumption. See the `to_edo` doc-comment above.
-        let all_included: Vec<String> = self.included_packages.packages.clone();
+        // Transitively close `[variant.local-packages].packages` over
+        // the in-repo `[package].depends` graph. BFS keeps ordering
+        // stable and short-circuits cycles.
+        let local_closure: BTreeSet<String> = close_local_packages(
+            &self.local_packages.packages,
+            project_packages,
+        );
 
-        // Transform-graph deps: only names known to have a real
-        // in-repo `//packages/<name>/rpm` transform emitted by the
-        // earlier packages walk. Kit-supplied names are silently
-        // dropped here — their RPMs enter `deps/rpms/` through the
-        // rootfs element's `kits` source scope instead.
-        let packages: Vec<Addr> = self
-            .included_packages
-            .packages
+        // Full install-name list = kit-supplied `included-packages`
+        // + every in-repo package in the transitive closure. Both
+        // buckets carry short names (the `bottlerocket-` prefix is
+        // added downstream in `VariantRootfsTransform`). Dedupe via
+        // BTreeSet so a package that appears in both blocks doesn't
+        // land in the dnf command line twice.
+        let mut install_names: BTreeSet<String> = BTreeSet::new();
+        install_names.extend(self.included_packages.packages.iter().cloned());
+        install_names.extend(local_closure.iter().cloned());
+        let all_included: Vec<String> = install_names.into_iter().collect();
+
+        // Transform-graph deps: one `//packages/<name>/rpm` per name
+        // in `local_closure` that actually corresponds to an in-repo
+        // package. Names outside `project_packages` are dropped here
+        // (dnf will surface the missing-provider error at install
+        // time). Sorted by iteration over BTreeSet — stable output.
+        let packages: Vec<Addr> = local_closure
             .iter()
-            .filter(|name| project_packages.contains(name.as_str()))
+            .filter(|name| project_packages.contains_key(name.as_str()))
             .map(|name| Addr::parse(&format!("//packages/{name}/rpm")))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -407,6 +448,43 @@ impl Variant {
     }
 }
 
+/// BFS the transitive closure of `roots` over the in-repo package
+/// dependency graph.
+///
+/// - `roots`: names from `[variant.local-packages].packages`.
+/// - `graph`: `package.name -> [package.depends]` collected during
+///   the packages walk.
+///
+/// Returns the sorted (`BTreeSet`) closure. Missing edges (a dep
+/// naming a package the project doesn't have) are ignored here — the
+/// missing name is still added to the set (so it lands in the dnf
+/// install list) but no transform dep is emitted for it. Cycles are
+/// tolerated: nodes already in the closure are skipped.
+///
+/// Kept module-scoped rather than as an inherent method because it
+/// doesn't touch any of the surrounding [`Variant`] state.
+fn close_local_packages(
+    roots: &[String],
+    graph: &BTreeMap<String, Vec<String>>,
+) -> BTreeSet<String> {
+    let mut closure: BTreeSet<String> = BTreeSet::new();
+    let mut queue: std::collections::VecDeque<String> =
+        roots.iter().cloned().collect();
+    while let Some(name) = queue.pop_front() {
+        if !closure.insert(name.clone()) {
+            continue;
+        }
+        if let Some(deps) = graph.get(&name) {
+            for dep in deps {
+                if !closure.contains(dep) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+    closure
+}
+
 /// Return a copy of the base config with `packages`, `guest-images`,
 /// and `included-packages` set to empty arrays.
 ///
@@ -441,10 +519,26 @@ mod tests {
         addrs.iter().map(|a| Addr::parse(a).unwrap()).collect()
     }
 
-    /// Build a `BTreeSet` of in-repo package short names — the same
-    /// shape the packages walk produces from each `[package].name`.
-    fn pkgs(names: &[&str]) -> BTreeSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
+    /// Build a `BTreeMap` of in-repo package short names → their
+    /// declared `[package].depends` list — the same shape the
+    /// packages walk builds. Every entry here uses an empty deps
+    /// vector; tests that need a real graph should construct it
+    /// inline.
+    fn pkgs(names: &[&str]) -> BTreeMap<String, Vec<String>> {
+        names.iter().map(|s| (s.to_string(), Vec::new())).collect()
+    }
+
+    /// Build a `BTreeMap<name, depends>` from `(name, [deps])` tuples.
+    fn pkgs_with_deps(entries: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+        entries
+            .iter()
+            .map(|(name, deps)| {
+                (
+                    name.to_string(),
+                    deps.iter().map(|s| s.to_string()).collect(),
+                )
+            })
+            .collect()
     }
 
     /// Read the unresolved-side scope table from an `Element`. Every
@@ -554,12 +648,14 @@ version = "0.1.0"
 name = "x"
 version = "0.1.0"
 
-[included-packages]
+[local-packages]
 packages = ["pkg-e"]
 "#,
         );
-        // `pkg-e` is treated as in-repo for this test so the emitter
-        // resolves it to a `//packages/pkg-e/rpm` transform dep.
+        // `pkg-e` is in-repo (present in `project_packages`), so the
+        // emitter resolves it to a `//packages/pkg-e/rpm` transform
+        // dep AND lands it in the flat `included-packages` install
+        // list.
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
@@ -575,7 +671,7 @@ packages = ["pkg-e"]
         assert_eq!(packages.len(), 1);
         assert_eq!(packages[0].as_str(), Some("//packages/pkg-e/rpm"));
 
-        // Full name list flows through the flat `included-packages`
+        // Full install list flows through the flat `included-packages`
         // config field on the rootfs stage.
         let included = rootfs
             .config
@@ -627,10 +723,10 @@ packages = ["pkg-e"]
         }
     }
 
-    /// Names that don't match any in-repo package are dropped from
-    /// the transform-graph deps but still flow through the config's
-    /// `included-packages` list. This is the exact failure mode the
-    /// bug fix targets.
+    /// Kit-supplied names (from `[variant.included-packages]`) never
+    /// generate transform-graph deps. They flow through the config's
+    /// flat `included-packages` install list to the rootfs stage's
+    /// dnf command line, and only there.
     #[test]
     fn kit_supplied_packages_do_not_become_transform_addrs() {
         let v = parse(
@@ -667,12 +763,14 @@ packages = ["release", "kernel-6.18"]
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert_eq!(included, vec!["release", "kernel-6.18"]);
+        // Alphabetically sorted (via BTreeSet dedupe).
+        assert_eq!(included, vec!["kernel-6.18", "release"]);
     }
 
-    /// A mixed list splits: in-repo names become transform deps,
-    /// kit-supplied names don't, and the full unfiltered list still
-    /// reaches the rootfs config for downstream dnf.
+    /// A mixed configuration splits by block: `included-packages`
+    /// stays kit-supplied (no transform dep), `local-packages`
+    /// resolves to a transform dep, and the flat install list on
+    /// the rootfs stage is the union of both.
     #[test]
     fn mixed_in_repo_and_kit_packages_split_correctly() {
         let v = parse(
@@ -681,7 +779,10 @@ name = "x"
 version = "0.1.0"
 
 [included-packages]
-packages = ["release", "settings-defaults"]
+packages = ["release"]
+
+[local-packages]
+packages = ["settings-defaults"]
 "#,
         );
         let schema = v
@@ -696,7 +797,8 @@ packages = ["release", "settings-defaults"]
             .get(&Addr::parse("//variants/x/rootfs").unwrap())
             .unwrap();
 
-        // Only the in-repo name becomes a transform dep.
+        // Only the in-repo name (from `[local-packages]`) becomes a
+        // transform dep.
         let packages: Vec<&str> = rootfs
             .config
             .get("packages")
@@ -708,7 +810,7 @@ packages = ["release", "settings-defaults"]
             .collect();
         assert_eq!(packages, vec!["//packages/settings-defaults/rpm"]);
 
-        // Full unfiltered list appears in `included-packages`.
+        // Install list = union of both blocks, sorted by BTreeSet.
         let included: Vec<&str> = rootfs
             .config
             .get("included-packages")
@@ -719,6 +821,85 @@ packages = ["release", "settings-defaults"]
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(included, vec!["release", "settings-defaults"]);
+    }
+
+    /// `[variant.local-packages]` is transitively closed via each
+    /// in-repo package's `[package].depends`. A user listing only
+    /// the top-level `release` pulls in `os` and `storewolf` and
+    /// `settings-defaults` automatically.
+    #[test]
+    fn local_packages_transitively_closed_via_depends_graph() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[local-packages]
+packages = ["release"]
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &[],
+                &pkgs_with_deps(&[
+                    ("release", &["os"]),
+                    ("os", &["storewolf"]),
+                    ("storewolf", &["settings-defaults"]),
+                    ("settings-defaults", &[]),
+                    ("unrelated", &[]),
+                ]),
+            )
+            .unwrap();
+        let rootfs = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x/rootfs").unwrap())
+            .unwrap();
+
+        let packages: Vec<&str> = rootfs
+            .config
+            .get("packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        // BTreeSet sort → alphabetical.
+        assert_eq!(
+            packages,
+            vec![
+                "//packages/os/rpm",
+                "//packages/release/rpm",
+                "//packages/settings-defaults/rpm",
+                "//packages/storewolf/rpm",
+            ],
+        );
+
+        let included: Vec<&str> = rootfs
+            .config
+            .get("included-packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            included,
+            vec!["os", "release", "settings-defaults", "storewolf"],
+        );
+    }
+
+    /// Cycles in the dep graph don't hang the closure.
+    #[test]
+    fn local_packages_closure_tolerates_cycles() {
+        let closure = close_local_packages(
+            &["a".to_string()],
+            &pkgs_with_deps(&[("a", &["b"]), ("b", &["a"])]),
+        );
+        let names: Vec<&String> = closure.iter().collect();
+        assert_eq!(names, vec!["a", "b"]);
     }
 
     /// Regression guard: when the variant declares no included

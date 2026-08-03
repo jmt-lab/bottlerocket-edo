@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     fs::read_dir,
     path::{Path, PathBuf},
 };
@@ -79,16 +79,19 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
 
-        // The set of in-repo package short names, populated during the
-        // packages walk below. Names are the `[package].name` field
-        // parsed from each `packages/<dir>/package.toml` (not the
-        // dirname — see `Package::to_edo`, which builds its address
-        // from `name`). The variants walk consults this set to
-        // distinguish `[variant.included-packages]` entries that
-        // resolve to an in-repo `//packages/<name>/rpm` transform
-        // from those that are kit-supplied (and therefore have no
-        // transform to depend on).
-        let mut project_packages: BTreeSet<String> = BTreeSet::new();
+        // The in-repo package dependency graph, populated during the
+        // packages walk below. Keyed by the parsed `[package].name`
+        // field (not dirname — see `Package::to_edo`, which builds
+        // its address from `name`); each value is the package's
+        // `[package].depends` list verbatim.
+        //
+        // The variants walk consults this graph to transitively
+        // close each `[variant.local-packages].packages` list —
+        // users list only the top-level packages they care about
+        // and the closure pulls in every reachable in-repo dep
+        // (matches old-twoliter's Cargo-graph-based
+        // `PACKAGE_DEPENDENCIES` behavior).
+        let mut project_packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
         // 2. Check if we have a kits/ directory defining we have kits in-project
         let (kit_dir, kit_addr) = (path.join("kits"), Addr::parse("//kits")?);
@@ -139,7 +142,7 @@ impl Config {
         namespace: &Addr,
         path: P,
         project_kits: &[Addr],
-        project_packages: &mut BTreeSet<String>,
+        project_packages: &mut BTreeMap<String, Vec<String>>,
         schema: &mut Schema,
     ) -> Result<(), error::Error> {
         let read = read_dir(path).context(error::IoSnafu)?;
@@ -326,7 +329,7 @@ impl Config {
     fn package_toml<P: AsRef<Path>>(
         namespace: &Addr,
         path: P,
-        project_packages: &mut BTreeSet<String>,
+        project_packages: &mut BTreeMap<String, Vec<String>>,
     ) -> Result<Option<Schema>, error::Error> {
         let package_toml = path.as_ref().join("package.toml");
         if package_toml.try_exists().context(error::IoSnafu)? {
@@ -339,9 +342,12 @@ impl Config {
                     ConfigType::Package(pkg) => {
                         // Record the parsed name (not the dirname —
                         // `Package::to_edo` builds its address from
-                        // `Package.name`). Duplicates are silently
-                        // collapsed by the `BTreeSet`.
-                        project_packages.insert(pkg.name.clone());
+                        // `Package.name`) alongside its declared
+                        // `[package].depends` list. Duplicate names
+                        // overwrite (last one wins) and are rare in
+                        // practice; a well-formed project has one
+                        // package.toml per name.
+                        project_packages.insert(pkg.name.clone(), pkg.depends.clone());
                         Ok(pkg.to_edo(namespace)?)
                     }
                     ConfigType::Kit(_) => error::ExpectedSnafu {
@@ -384,7 +390,7 @@ impl Config {
         namespace: &Addr,
         path: P,
         project_kits: &[Addr],
-        project_packages: &BTreeSet<String>,
+        project_packages: &BTreeMap<String, Vec<String>>,
     ) -> Result<Option<Schema>, error::Error> {
         let variant_toml = path.as_ref().join("variant.toml");
         if variant_toml.try_exists().context(error::IoSnafu)? {

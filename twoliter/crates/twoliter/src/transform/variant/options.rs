@@ -50,20 +50,22 @@ pub struct VariantImageOptions {
     #[serde(default)]
     pub image_features: SerializableFeatures,
 
-    /// Full unfiltered list of package short names from the source
-    /// `[variant.included-packages].packages` block.
+    /// Sorted list of package short names to hand to `dnf install`
+    /// at rootfs-stage time.
     ///
-    /// Includes both in-repo names (which also appear resolved in
-    /// [`Self::packages`] as `//packages/<name>/rpm` transform
-    /// addresses) and kit-supplied names (which do not — their RPMs
-    /// arrive via the rootfs element's `kits` source scope).
+    /// Populated by [`crate::config::variant::Variant::to_edo`] as
+    /// the union of two source blocks:
     ///
-    /// **No transform reads this field today.** The intended future
-    /// consumer is a switch of `crate::image::rpm_install::install_rpms`
-    /// from `rpm -iv <every-rpm-in-dir>` to `dnf install <name-list>`,
-    /// at which point this list is what dnf will select from the
-    /// union of RPMs in `deps/rpms/`. Wiring it through now so the
-    /// switch is a purely local change.
+    /// - `[variant.included-packages].packages` — kit-supplied names;
+    ///   their RPMs arrive via the rootfs element's `kits` source
+    ///   scope.
+    /// - `[variant.local-packages].packages`, transitively closed
+    ///   over `[package].depends` — in-repo names; each corresponds
+    ///   to a `//packages/<name>/rpm` entry in [`Self::packages`].
+    ///
+    /// Consumed by `VariantRootfsTransform::stage` when building the
+    /// dnf command line for the rootfs. Every name here gets a
+    /// `bottlerocket-` prefix at that point.
     #[serde(default)]
     pub included_packages: Vec<String>,
 
