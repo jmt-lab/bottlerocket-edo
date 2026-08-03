@@ -68,7 +68,10 @@ pub use error::{Error, Result};
 pub use grub::{GrubUefiInstall, install_grub_uefi};
 pub use image::{StageRootInputs, stage_root};
 pub use layout::{resolved_image_layout, validate_image_features};
-pub use metadata::{RootfsMetadata, VariantManifest};
+pub use metadata::{
+    BuildMetadataRpmInputs, RootfsMetadata, VariantManifest, VariantNameError,
+    VariantSegments, build_metadata_rpm,
+};
 pub use ovf::{assemble_ova, render_ova_manifest, sha256_of};
 pub use model::{
     Arch, DEFAULT_DATA_IMAGE_SIZE_GIB, DEFAULT_NO_FIRST_PARTY_OS_IMAGE_SIZE_GIB,

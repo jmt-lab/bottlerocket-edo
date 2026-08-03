@@ -404,10 +404,45 @@ impl TransformImpl for VariantRootfsTransform {
             drop(root_mount);
             drop(out);
 
+            // (c.1) Build the per-variant metadata RPM. This RPM
+            // provides the virtual capabilities other RPMs (kmods,
+            // release-*, etc.) require:
+            //
+            //   Requires: bottlerocket-variant-platform(aws)
+            //   Requires: bottlerocket-image-feature(erofs-root-partition)
+            //   ...
+            //
+            // Without it, `rpm -iv` in `stage_root` fails with
+            // "X is needed by Y" for every RPM that carries such a
+            // dependency (e.g. every nvidia kmod).
+            //
+            // The RPM lands in `deps/rpms/` alongside every other
+            // staged RPM so `install_rpms` picks it up without any
+            // extra plumbing.
+            let rpm_dir = std::path::PathBuf::from("deps/rpms");
+            let arch = self
+                .options
+                .arch
+                .clone()
+                .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+            let metadata_workdir = std::path::PathBuf::from("metadata-rpm");
+            vfs.create_dir(&metadata_workdir).await?;
+            crate::image::build_metadata_rpm(
+                &vfs,
+                &crate::image::BuildMetadataRpmInputs {
+                    variant_name: &self.options.name,
+                    arch: &arch,
+                    features: &self.options.image_features.as_bitset(),
+                    workdir: &metadata_workdir,
+                    output_dir: &rpm_dir,
+                },
+            )
+            .await
+            .context(error::BrImageSnafu)?;
+
             // (d) stage_root: install every RPM under deps/rpms into
             // root-mount/, with optional ca-bundle + tuf-root
             // decoration.
-            let rpm_dir = std::path::PathBuf::from("deps/rpms");
             let ca_bundle = pick_first_in(&vfs, "deps/ca-bundle").await?;
             let tuf_root = pick_first_in(&vfs, "deps/tuf-root").await?;
             stage_root(

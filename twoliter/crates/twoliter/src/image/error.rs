@@ -83,4 +83,13 @@ pub enum Error {
     /// other structured-metadata emitter added later.
     #[snafu(display("json serialization error: {source}"))]
     Serialization { source: serde_json::Error },
+
+    /// The variant name (e.g. `"aws-k8s-1.29"`) could not be
+    /// decomposed into the `_cross_variant_*` segments the metadata
+    /// RPM spec requires. See
+    /// [`crate::image::metadata::VariantSegments::parse`].
+    #[snafu(display("{source}"))]
+    VariantName {
+        source: crate::image::metadata::VariantNameError,
+    },
 }

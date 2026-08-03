@@ -20,6 +20,248 @@ use crate::image::model::{
     Arch, ImageFeature, ImageFeatures, ImageFormat, ImageLayout, PartitionPlan,
 };
 
+/// Default variant flavor when the variant name has no fourth segment.
+/// Matches `old-twoliter/tools/bottlerocket-variant::DEFAULT_VARIANT_FLAVOR`.
+pub const DEFAULT_VARIANT_FLAVOR: &str = "none";
+
+/// Parsed segments of a Bottlerocket variant name (dash-delimited).
+///
+/// A variant name has the shape `platform-runtime[-version][-flavor]`
+/// (plus optional trailing segments that are ignored). The parser is
+/// a Rust port of `old-twoliter/tools/bottlerocket-variant::Variant`
+/// and only extracts the segments the metadata RPM needs: `platform`,
+/// `runtime`, `family` (= `platform-runtime`), and `flavor` (defaulting
+/// to `"none"`).
+///
+/// The metadata RPM's `.spec` (see [`crate::image::METADATA_SPEC`])
+/// consumes these as `%_cross_variant_*` macros so it can emit
+/// `Provides: bottlerocket-variant-platform(<platform>)` etc., which
+/// kmod packages depend on via `Requires:
+/// bottlerocket-variant-platform(<platform>)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantSegments<'a> {
+    pub name: &'a str,
+    pub platform: &'a str,
+    pub runtime: &'a str,
+    pub family: String,
+    pub flavor: &'a str,
+}
+
+impl<'a> VariantSegments<'a> {
+    /// Parse `name` into its metadata-RPM-relevant segments.
+    ///
+    /// Errors if the first two segments (`platform`, `runtime`) are
+    /// missing or empty. Fourth segment defaults to
+    /// [`DEFAULT_VARIANT_FLAVOR`] (`"none"`).
+    pub fn parse(name: &'a str) -> std::result::Result<Self, VariantNameError> {
+        let mut parts = name.split('-');
+        let platform = parts.next().unwrap_or("");
+        if platform.is_empty() {
+            return Err(VariantNameError {
+                name: name.to_string(),
+                reason: "platform segment is missing or empty".into(),
+            });
+        }
+        let runtime = parts.next().ok_or_else(|| VariantNameError {
+            name: name.to_string(),
+            reason: "runtime segment is missing".into(),
+        })?;
+        if runtime.is_empty() {
+            return Err(VariantNameError {
+                name: name.to_string(),
+                reason: "runtime segment is empty".into(),
+            });
+        }
+        // Skip past the optional version segment (third dash-delimited
+        // token, e.g. `1.33` in `aws-k8s-1.33-nvidia`); we don't need
+        // to expose it because the metadata spec doesn't reference
+        // `%_cross_variant_version`.
+        let _version = parts.next();
+        let flavor = parts.next().unwrap_or(DEFAULT_VARIANT_FLAVOR);
+        Ok(Self {
+            name,
+            platform,
+            runtime,
+            family: format!("{platform}-{runtime}"),
+            flavor,
+        })
+    }
+}
+
+/// Error returned by [`VariantSegments::parse`] when the variant name
+/// fails validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantNameError {
+    pub name: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for VariantNameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid variant name `{}`: {}", self.name, self.reason)
+    }
+}
+
+impl std::error::Error for VariantNameError {}
+
+/// Inputs to [`build_metadata_rpm`].
+///
+/// `variant_name` is the raw variant string (e.g. `"aws-k8s-1.33"`);
+/// [`VariantSegments::parse`] decomposes it into the `_cross_variant_*`
+/// macros the spec needs. `arch` is the target CPU (`"x86_64"` or
+/// `"aarch64"`) — used both to load the SDK's arch-specific rpm macros
+/// (which define `%{_cross_os}` = `"bottlerocket-"`) and passed to
+/// rpmbuild as `--define "_target_cpu"`.
+///
+/// `output_dir` is where the finished `bottlerocket-metadata-*.rpm`
+/// (and its `-sbom-` subpackage) land. The caller places this under
+/// the transform's `deps/rpms/` staging tree so `install_rpms` picks
+/// them up.
+#[derive(Debug, Clone)]
+pub struct BuildMetadataRpmInputs<'a> {
+    pub variant_name: &'a str,
+    pub arch: &'a str,
+    pub features: &'a ImageFeatures,
+    /// Directory that will hold the built `.rpm` files (and the
+    /// scratch rpmbuild tree). Must exist inside the vfs.
+    pub workdir: &'a std::path::Path,
+    /// Directory where the produced `.rpm` files are copied after the
+    /// build. Must exist inside the vfs.
+    pub output_dir: &'a std::path::Path,
+}
+
+/// Build the per-variant metadata RPM inside the SDK environment.
+///
+/// Ports the `metadata.spec` build stage of
+/// `old-twoliter/twoliter/embedded/build.Dockerfile` (see the
+/// `rpm-macros-and-bconds` and `repobuild` stages). The produced RPM
+/// provides the virtual capabilities that other RPMs (kmod packages,
+/// release-*, etc.) require:
+///
+/// - `bottlerocket-variant(<name>)`
+/// - `bottlerocket-variant-platform(<platform>)`
+/// - `bottlerocket-variant-runtime(<runtime>)`
+/// - `bottlerocket-variant-family(<family>)`
+/// - `bottlerocket-variant-flavor(<flavor>)`
+/// - `bottlerocket-image-feature(<feat>)` / `no-<feat>` per feature
+///
+/// Steps performed inside `workdir`:
+///
+///  1. Create `rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}`.
+///  2. Copy the SDK's arch-specific rpm macros to `.rpmmacros` (this
+///     is where `%{_cross_os}` is defined).
+///  3. Write the bundled [`crate::image::METADATA_SPEC`] to
+///     `rpmbuild/SPECS/metadata.spec`.
+///  4. Run `rpmbuild -bb` with `_target_cpu`, `_topdir`, every
+///     `_cross_variant_*` macro, and `--with`/`--without` toggles for
+///     each feature listed in [`RPMBUILD_TOGGLES`].
+///  5. Copy every produced `.rpm` from `rpmbuild/RPMS/**` into
+///     `output_dir/`.
+///
+/// The metadata spec produces two RPMs: the main
+/// `bottlerocket-metadata` package and a `bottlerocket-metadata-sbom`
+/// subpackage; both are copied.
+pub async fn build_metadata_rpm(
+    vfs: &edo::environment::Vfs,
+    inputs: &BuildMetadataRpmInputs<'_>,
+) -> Result<()> {
+    use crate::image::error::VariantNameSnafu;
+    use snafu::ResultExt;
+
+    let segments = VariantSegments::parse(inputs.variant_name)
+        .with_context(|_| VariantNameSnafu)?;
+
+    // Step 1: rpmbuild tree.
+    let rpmbuild = inputs.workdir.join("rpmbuild");
+    let specs = rpmbuild.join("SPECS");
+    let rpms = rpmbuild.join("RPMS");
+    for sub in ["BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"] {
+        vfs.create_dir(&rpmbuild.join(sub)).await?;
+    }
+
+    // Step 2: SDK arch-specific rpm macros. Defines `%{_cross_os}`,
+    // among other cross-compile macros. Copied to both the workdir's
+    // `.rpmmacros` (which rpmbuild picks up when cwd points at it)
+    // and `/root/.rpmmacros` (which it picks up unconditionally when
+    // running as root) — same belt-and-braces pattern as
+    // `PackageTransform`.
+    let rpmmacros_src = format!(
+        "/usr/lib/rpm/platform/{}-bottlerocket/macros",
+        inputs.arch
+    );
+    vfs.copy(&rpmmacros_src, &inputs.workdir.join(".rpmmacros"))
+        .await?;
+    vfs.copy(&rpmmacros_src, "/root/.rpmmacros").await?;
+
+    // Step 3: write spec.
+    let spec_path = specs.join("metadata.spec");
+    vfs.write(&spec_path, crate::image::METADATA_SPEC.as_bytes())
+        .await?;
+
+    // Step 4: rpmbuild. Args flow through the vfs `execute` as a
+    // shell-joined string, so `--define` values that carry spaces
+    // must include their own literal double quotes; the same pattern
+    // `PackageTransform` uses. See `edo::environment::Vfs::command`.
+    let topdir_arg = format!("--define \"_topdir {:?}\"", rpmbuild);
+    let target_cpu_arg = format!("--define \"_target_cpu {}\"", inputs.arch);
+    let variant_arg = format!("--define \"_cross_variant {}\"", segments.name);
+    let platform_arg = format!(
+        "--define \"_cross_variant_platform {}\"",
+        segments.platform
+    );
+    let runtime_arg = format!(
+        "--define \"_cross_variant_runtime {}\"",
+        segments.runtime
+    );
+    let family_arg = format!(
+        "--define \"_cross_variant_family {}\"",
+        segments.family
+    );
+    let flavor_arg = format!(
+        "--define \"_cross_variant_flavor {}\"",
+        segments.flavor
+    );
+
+    let mut argv: Vec<String> = vec![
+        "-bb".into(),
+        "--clean".into(),
+        "--undefine _auto_set_build_flags".into(),
+        topdir_arg,
+        target_cpu_arg,
+        variant_arg,
+        platform_arg,
+        runtime_arg,
+        family_arg,
+        flavor_arg,
+    ];
+
+    for tok in render_metadata_rpmbuild_args(inputs.features) {
+        argv.push(tok);
+    }
+    argv.push(format!("{:?}", spec_path));
+
+    vfs.command("build_metadata_rpm", "rpmbuild", &argv).await?;
+
+    // Step 5: copy the built RPMs to `output_dir`. rpmbuild drops
+    // them under `rpmbuild/RPMS/<arch>/`, so we glob the arch
+    // subdir the same way `PackageTransform` does its final copy.
+    let copy_cmd = format!(
+        "{:?}/{}/*.rpm",
+        rpms, inputs.arch
+    );
+    vfs.command(
+        "copy_metadata_rpm",
+        "cp",
+        &[
+            "-r".to_string(),
+            copy_cmd,
+            format!("{:?}", inputs.output_dir),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Convert an [`ImageFeatures`] snapshot into the ordered
 /// `--with FLAG` / `--without FLAG` argument list for `rpmbuild`. Every
 /// feature listed in [`RPMBUILD_TOGGLES`] appears exactly once.
@@ -166,6 +408,49 @@ impl RootfsMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variant_segments_parses_four_segment_name() {
+        let s = VariantSegments::parse("aws-k8s-1.29-nvidia").unwrap();
+        assert_eq!(s.platform, "aws");
+        assert_eq!(s.runtime, "k8s");
+        assert_eq!(s.family, "aws-k8s");
+        assert_eq!(s.flavor, "nvidia");
+    }
+
+    #[test]
+    fn variant_segments_defaults_flavor_to_none() {
+        let s = VariantSegments::parse("aws-k8s-1.33").unwrap();
+        assert_eq!(s.platform, "aws");
+        assert_eq!(s.runtime, "k8s");
+        assert_eq!(s.family, "aws-k8s");
+        assert_eq!(s.flavor, "none");
+    }
+
+    #[test]
+    fn variant_segments_two_segments_ok() {
+        // e.g. `aws-dev` — no version, no flavor.
+        let s = VariantSegments::parse("aws-dev").unwrap();
+        assert_eq!(s.platform, "aws");
+        assert_eq!(s.runtime, "dev");
+        assert_eq!(s.family, "aws-dev");
+        assert_eq!(s.flavor, "none");
+    }
+
+    #[test]
+    fn variant_segments_rejects_single_segment() {
+        assert!(VariantSegments::parse("aws").is_err());
+    }
+
+    #[test]
+    fn variant_segments_rejects_empty_platform() {
+        assert!(VariantSegments::parse("-k8s").is_err());
+    }
+
+    #[test]
+    fn variant_segments_rejects_empty_runtime() {
+        assert!(VariantSegments::parse("aws-").is_err());
+    }
 
     #[test]
     fn all_off_yields_all_without() {
