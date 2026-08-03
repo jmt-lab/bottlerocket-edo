@@ -338,6 +338,32 @@ pub struct StageRootInputs<'a> {
     pub root_mount: &'a Path,
     /// Directory containing every `*.rpm` to install.
     pub package_dir: &'a Path,
+    /// Package short names to hand to `dnf install` when
+    /// [`install_by_name`](Self::install_by_name) is `true`. Ignored
+    /// otherwise. The list is passed to dnf as-is, so callers add
+    /// any convention-required prefix (e.g. `bottlerocket-`)
+    /// themselves.
+    pub package_names: &'a [String],
+    /// When true, [`crate::image::rpm_install::install_rpms_by_name`]
+    /// runs (createrepo + `dnf install <names>`), letting dnf resolve
+    /// deps against the local repo and picking exactly the packages
+    /// named. When false, every RPM under `package_dir` is
+    /// force-installed via `rpm -iv`.
+    ///
+    /// Old-twoliter's `rpm2img` used the force-install path
+    /// exclusively because its caller had already filtered
+    /// `PACKAGE_DIR` down to the resolved subset via a preceding
+    /// `dnf install --downloadonly` step. In this crate the same
+    /// filtering happens inline via
+    /// [`crate::image::rpm_install::install_rpms_by_name`], so callers
+    /// with an `included-packages` list should flip this on.
+    pub install_by_name: bool,
+    /// Target CPU (e.g. `"x86_64"`, `"aarch64"`) passed to dnf as
+    /// `--forcearch`. Ignored when
+    /// [`install_by_name`](Self::install_by_name) is `false`. Absent
+    /// when the caller doesn't know the arch and is using
+    /// force-install anyway.
+    pub arch: Option<&'a str>,
     /// Optional CA-bundle PEM to install as
     /// `usr/share/factory/etc/pki/tls/certs/ca-bundle.crt`.
     pub ca_bundle: Option<&'a Path>,
@@ -369,7 +395,23 @@ pub struct StageRootInputs<'a> {
 /// documented in `doc/transforms/variant-image.md::Algorithm` (step
 /// `d`): install → decorate → relabel.
 pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
-    crate::image::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir).await?;
+    if inputs.install_by_name {
+        let arch = inputs.arch.ok_or_else(|| Error::InvalidLayout {
+            context: "stage_root".into(),
+            reason: "install_by_name=true requires arch to be set".into(),
+        })?;
+        crate::image::rpm_install::install_rpms_by_name(
+            vfs,
+            inputs.root_mount,
+            inputs.package_dir,
+            inputs.package_names,
+            arch,
+        )
+        .await?;
+    } else {
+        crate::image::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir)
+            .await?;
+    }
     if let Some(bundle) = inputs.ca_bundle {
         install_ca_certs(vfs, inputs.root_mount, bundle).await?;
     }

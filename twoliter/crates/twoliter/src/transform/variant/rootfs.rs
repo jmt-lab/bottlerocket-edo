@@ -440,9 +440,39 @@ impl TransformImpl for VariantRootfsTransform {
             .await
             .context(error::BrImageSnafu)?;
 
-            // (d) stage_root: install every RPM under deps/rpms into
-            // root-mount/, with optional ca-bundle + tuf-root
+            // (d) stage_root: dnf-install the named subset of RPMs
+            // into root-mount/, with optional ca-bundle + tuf-root
             // decoration.
+            //
+            // We resolve by name (not force-install every staged RPM)
+            // because kits ship mutually-exclusive alternatives
+            // (`iptables-nft` vs `iptables-legacy`, `docker-engine-25`
+            // vs `docker-engine-29`, kernel variants tied to
+            // image-feature Requires, etc.). Force-installing them
+            // all triggers RPM conflicts. The `included-packages`
+            // list carried on `VariantImageOptions` is exactly the
+            // filter the caller intended — dnf picks that subset out
+            // of the local repo and resolves its deps.
+            //
+            // Every name gets a `bottlerocket-` prefix (SDK convention:
+            // `%{_cross_os}` expands to `bottlerocket-`) and the
+            // metadata RPMs (`bottlerocket-metadata` and its
+            // `-sbom` subpackage, which
+            // `crate::image::build_metadata_rpm` produced) are added
+            // to the selection so the virtual-capability
+            // `Provides:` land in the installed set. Mirrors old-
+            // twoliter's `printf "bottlerocket-%s\n" metadata
+            // metadata-sbom ${PACKAGES}` line in the
+            // `build.Dockerfile` `repobuild` stage.
+            let mut install_names: Vec<String> = Vec::with_capacity(
+                self.options.included_packages.len() + 2,
+            );
+            install_names.push("bottlerocket-metadata".to_string());
+            install_names.push("bottlerocket-metadata-sbom".to_string());
+            for name in &self.options.included_packages {
+                install_names.push(format!("bottlerocket-{name}"));
+            }
+
             let ca_bundle = pick_first_in(&vfs, "deps/ca-bundle").await?;
             let tuf_root = pick_first_in(&vfs, "deps/tuf-root").await?;
             stage_root(
@@ -450,6 +480,9 @@ impl TransformImpl for VariantRootfsTransform {
                 &StageRootInputs {
                     root_mount: &root_mount_path,
                     package_dir: &rpm_dir,
+                    package_names: &install_names,
+                    install_by_name: true,
+                    arch: Some(arch.as_str()),
                     ca_bundle: ca_bundle.as_deref(),
                     tuf_root: tuf_root.as_deref(),
                     selinux_file_contexts: None,
