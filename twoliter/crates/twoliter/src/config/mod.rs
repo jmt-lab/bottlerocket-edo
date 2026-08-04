@@ -159,8 +159,16 @@ impl Config {
                         // `project_packages` with each parsed
                         // package's `name` field so the later variants
                         // walk can distinguish in-repo names from
-                        // kit-supplied ones.
-                        Self::package_toml(namespace, &path, project_packages)?
+                        // kit-supplied ones. `project_kits` flows in
+                        // so `Package::to_edo` can attach the
+                        // project-wide kit list under the RPM
+                        // element's `"kit"` source scope (parallel
+                        // to `Variant::to_edo`'s rootfs `"kits"`
+                        // scope). Without this, kit-supplied
+                        // BuildRequires (e.g. `bottlerocket-glibc-devel`
+                        // from the core kit) never land in the
+                        // package's local dnf repo.
+                        Self::package_toml(namespace, &path, project_kits, project_packages)?
                     }
                     Expect::Variant => {
                         Self::variant_toml(namespace, &path, project_kits, project_packages)?
@@ -329,6 +337,7 @@ impl Config {
     fn package_toml<P: AsRef<Path>>(
         namespace: &Addr,
         path: P,
+        project_kits: &[Addr],
         project_packages: &mut BTreeMap<String, Vec<String>>,
     ) -> Result<Option<Schema>, error::Error> {
         let package_toml = path.as_ref().join("package.toml");
@@ -348,7 +357,7 @@ impl Config {
                         // practice; a well-formed project has one
                         // package.toml per name.
                         project_packages.insert(pkg.name.clone(), pkg.depends.clone());
-                        Ok(pkg.to_edo(namespace)?)
+                        Ok(pkg.to_edo(namespace, project_kits)?)
                     }
                     ConfigType::Kit(_) => error::ExpectedSnafu {
                         expected: "package",

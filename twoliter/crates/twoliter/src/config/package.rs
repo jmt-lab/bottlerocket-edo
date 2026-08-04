@@ -47,7 +47,22 @@ pub enum Source {
 }
 
 impl Package {
-    pub fn to_edo(&self, addr: &Addr) -> Result<Schema, ContextError> {
+    /// Emit the RPM transform for this package.
+    ///
+    /// `kits` is the project-wide `[[project.kit]]` list, resolved by
+    /// `Twoliter::to_edo` into `//kits/<vendor>/<name>` addresses.
+    /// When non-empty it's attached to the RPM element's source map
+    /// under the `"kit"` scope, which `PackageBuildTransform::new`
+    /// resolves via `ctx.add_source(...)` into `kit-image` sources.
+    /// Those sources stage each kit's RPMs into `deps/Packages/…`
+    /// during `stage()`, making cross-toolchain BuildRequires like
+    /// `%{_cross_os}glibc-devel` (which live in the core kit) visible
+    /// to `dnf builddep`. Kits are attached as sources only — they do
+    /// not participate in the transform graph and are absent from
+    /// `depends()`. Wire shape mirrors `Variant::to_edo`'s rootfs
+    /// element (see `config/variant.rs`); the scope name is `"kit"`
+    /// (singular) to match `PackageBuildTransform::new`.
+    pub fn to_edo(&self, addr: &Addr, kits: &[Addr]) -> Result<Schema, ContextError> {
         let mut sources = BTreeMap::new();
         let mut transforms = BTreeMap::new();
         let pkg_addr = addr.join(&Addr::parse(&self.name)?);
@@ -193,16 +208,29 @@ impl Package {
         for item in self.depends.iter() {
             depends.push(format!("//packages/{item}/rpm"));
         }
+        // Attach project kits under the `"kit"` scope so
+        // `PackageBuildTransform::new` can resolve them as `kit-image`
+        // sources and stage their RPMs into `deps/Packages/…`. Skip the
+        // scope entirely when the project declares no kits, mirroring
+        // `Variant::to_edo`'s handling of an empty `[[project.kit]]`
+        // list. Cache separation between kit-less and kitted builds is
+        // handled by `PackageBuildTransform::get_unique_id`, which
+        // folds each kit source's digest into the hash — presence vs.
+        // absence of the scope entry itself does not affect the id.
+        let mut rpm_scopes: BTreeMap<String, Vec<Addr>> = BTreeMap::from([
+            ("sources".to_string(), local_sources),
+            ("archives".to_string(), archives),
+        ]);
+        if !kits.is_empty() {
+            rpm_scopes.insert("kit".to_string(), kits.to_vec());
+        }
         transforms.insert(
             rpm_addr.clone(),
             Element::builder()
                 .addr(rpm_addr.clone())
                 .kind("rpm")
                 .environment(sdk.clone())
-                .source(SourceMap::Unresolved(BTreeMap::from([
-                    ("sources".to_string(), local_sources),
-                    ("archives".to_string(), archives),
-                ])))
+                .source(SourceMap::Unresolved(rpm_scopes))
                 .config(BTreeMap::from([
                     ("package".to_string(), Value::String(self.name.clone())),
                     ("depends".to_string(), json!(depends)),
