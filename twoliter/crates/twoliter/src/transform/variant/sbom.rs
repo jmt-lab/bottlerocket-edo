@@ -17,10 +17,13 @@ use super::error;
 /// Run `sbomtool` over `rpm_dir` and produce a single `sbom.spdx.json`
 /// at `out_path`.
 ///
-/// The SBOM tool writes `<name>.spdx.json` under `sbom_work_dir`, but
-/// some SDK versions omit the `<name>` prefix. We accept both by
-/// preferring `variant-rpms.spdx.json` and falling back to the first
-/// `*.spdx.json` present.
+/// sbomtool writes `<name>-spdx.json` (dash-separated, matching
+/// old-twoliter's `rpm2img` line 317 `variant-rpms-${format}.json`
+/// convention), not `<name>.spdx.json`. We prefer the exact
+/// `variant-rpms-spdx.json` name we asked sbomtool to produce and fall
+/// back to the first `*-spdx.json` / `*.spdx.json` under the work dir
+/// so this keeps working if a future sbomtool version changes the
+/// naming again.
 pub async fn generate_sbom_spdx(
     vfs: &Vfs,
     rpm_dir: &Path,
@@ -31,7 +34,9 @@ pub async fn generate_sbom_spdx(
     crate::image::sbom::generate_sbom(vfs, rpm_dir, sbom_work_dir)
         .await
         .context(error::BrImageSnafu)?;
-    let preferred = sbom_work_dir.join("variant-rpms.spdx.json");
+
+    // Preferred: exact filename sbomtool produces today.
+    let preferred = sbom_work_dir.join("variant-rpms-spdx.json");
     if vfs
         .try_exists(&preferred)
         .await
@@ -44,22 +49,27 @@ pub async fn generate_sbom_spdx(
             .context(error::BrImageSnafu)?;
         return Ok(out_path.to_path_buf());
     }
-    let candidates = crate::image::vfs_ext::list_files(vfs, sbom_work_dir, "*.spdx.json")
-        .await
-        .context(error::BrImageSnafu)?;
-    if let Some(first) = candidates.first() {
-        vfs.copy(first, out_path)
+
+    // Fallback: any `*-spdx.json` or `*.spdx.json` sbomtool may have
+    // written (older/newer SDKs differ in the separator character).
+    for glob in ["*-spdx.json", "*.spdx.json"] {
+        let candidates = crate::image::vfs_ext::list_files(vfs, sbom_work_dir, glob)
             .await
-            .map_err(crate::image::Error::from)
             .context(error::BrImageSnafu)?;
-        Ok(out_path.to_path_buf())
-    } else {
-        Err(error::Error::BuildStep {
-            step: step_label.to_string(),
-            reason: format!(
-                "no *.spdx.json produced by sbomtool under {}",
-                sbom_work_dir.display()
-            ),
-        })
+        if let Some(first) = candidates.first() {
+            vfs.copy(first, out_path)
+                .await
+                .map_err(crate::image::Error::from)
+                .context(error::BrImageSnafu)?;
+            return Ok(out_path.to_path_buf());
+        }
     }
+
+    Err(error::Error::BuildStep {
+        step: step_label.to_string(),
+        reason: format!(
+            "no *-spdx.json / *.spdx.json produced by sbomtool under {}",
+            sbom_work_dir.display()
+        ),
+    })
 }

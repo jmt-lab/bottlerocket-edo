@@ -11,12 +11,16 @@
 //!   `dnf install --downloadonly` selected.
 //!
 //! - [`install_rpms_by_name`] — the resolving primitive. Builds a
-//!   `createrepo_c` index over the staged RPM directory and runs
-//!   `dnf install --installroot=<root>` with a list of package short
-//!   names. This is what a `variant-rootfs` transform should call
-//!   when it has an `included-packages` name list: it filters the
-//!   union of every RPM the kits + packages + metadata staged down
-//!   to just the ones actually named (plus their deps).
+//!   `createrepo_c` index over the staged RPM directory, runs
+//!   `dnf install --downloadonly` (with a throwaway `--installroot`
+//!   so dnf's rpmdb setup stays out of the real rootfs) to resolve
+//!   and download the requested names plus their deps, then invokes
+//!   [`install_rpms`] to force-install the resolved set into the
+//!   real (empty) rootfs. This is what a `variant-rootfs` transform
+//!   should call when it has an `included-packages` name list: it
+//!   filters the union of every RPM the kits + packages + metadata
+//!   staged down to just the ones actually named (plus their deps),
+//!   without letting dnf pre-create `/usr` in the target rootfs.
 //!
 //! Skeleton: subprocess sequences are wired but not exercised in-crate
 //! (require a real dnf/rpm plus a package cache).
@@ -49,6 +53,18 @@ async fn collect_rpms(vfs: &Vfs, dir: &Path) -> Result<Vec<PathBuf>> {
 /// invoke a shell (only `sh -c` at the wrapper level), so a literal
 /// `*.rpm` would either be expanded against the wrong cwd or passed
 /// verbatim to `rpm` — neither of which is what we want.
+///
+/// We pass `--define '_dbpath /var/lib/rpm'` to redirect rpm's DB out
+/// of the SDK-default `/usr/lib/sysimage/rpm`. If the DB is created
+/// under `/usr/lib/sysimage/rpm/` **before** the `bottlerocket-
+/// filesystem` RPM's CPIO payload tries to extract `/usr`, rpm's
+/// existing-directory reconciliation falls into the `;<hex>` rename
+/// path and fails with `cpio: File from package already exists as a
+/// directory`. Old-twoliter avoids this by injecting the same macro
+/// in the SDK builder image via `build.Dockerfile` L308
+/// (`echo '%_dbpath %{_sharedstatedir}/rpm' >> /etc/rpm/macros`); we
+/// re-apply the identical override on every `rpm` invocation instead
+/// of mutating SDK state.
 pub async fn install_rpms(vfs: &Vfs, install_root: &Path, package_dir: &Path) -> Result<()> {
     let rpms = collect_rpms(vfs, package_dir).await?;
     if rpms.is_empty() {
@@ -59,7 +75,14 @@ pub async fn install_rpms(vfs: &Vfs, install_root: &Path, package_dir: &Path) ->
     }
     let install_root_q = shell_quote_path(install_root);
     let rpm_qs: Vec<String> = rpms.iter().map(|p| shell_quote_path(p)).collect();
-    let mut argsv: Vec<&str> = vec!["-iv", "--ignorearch", "--root", install_root_q.as_str()];
+    let mut argsv: Vec<&str> = vec![
+        "-iv",
+        "--ignorearch",
+        "--define",
+        "'_dbpath /var/lib/rpm'",
+        "--root",
+        install_root_q.as_str(),
+    ];
     for r in &rpm_qs {
         argsv.push(r.as_str());
     }
@@ -91,7 +114,17 @@ pub async fn install_sbom_rpms(
     }
     let scratch_root_q = shell_quote_path(scratch_root);
     let rpm_qs: Vec<String> = rpms.iter().map(|p| shell_quote_path(p)).collect();
-    let mut argsv: Vec<&str> = vec!["-iv", "--ignorearch", "--root", scratch_root_q.as_str()];
+    // See `install_rpms` for why `_dbpath` is redirected off
+    // `/usr/lib/sysimage/rpm`. Same reasoning applies to the SBOM
+    // scratch root: `bottlerocket-*-sbom` RPMs also ship `/usr`.
+    let mut argsv: Vec<&str> = vec![
+        "-iv",
+        "--ignorearch",
+        "--define",
+        "'_dbpath /var/lib/rpm'",
+        "--root",
+        scratch_root_q.as_str(),
+    ];
     for r in &rpm_qs {
         argsv.push(r.as_str());
     }
@@ -99,8 +132,9 @@ pub async fn install_sbom_rpms(
     Ok(())
 }
 
-/// Build a local repo index over `package_dir` and dnf-install the
-/// named packages into `install_root`.
+/// Build a local repo index over `package_dir`, resolve the named
+/// packages (plus their dependency closure) against it, download the
+/// resolved RPM set, then force-install that set into `install_root`.
 ///
 /// `package_names` are dnf-resolvable package selectors — typically
 /// short names like `"kernel-6.12"` that dnf will match against
@@ -120,13 +154,25 @@ pub async fn install_sbom_rpms(
 ///
 ///  1. `createrepo_c` against `package_dir` (idempotent; adds a
 ///     `repodata/` subdir to the staged tree).
-///  2. `dnf install --installroot=<root> --disablerepo='*'
+///  2. `dnf --assumeyes --disablerepo='*'
 ///     --repofrompath=local,<package_dir> --enablerepo=local
-///     --nogpgcheck --forcearch=<arch> --assumeyes <names…>`.
+///     --nogpgcheck --forcearch=<arch>
+///     --setopt=cachedir=<downloads> install --downloadonly
+///     <names…>` — resolves the transaction and downloads the RPMs
+///     into a scratch cache directory without touching
+///     `install_root`. Matches old-twoliter's `build.Dockerfile`
+///     `repobuild` stage exactly (no `--installroot`, no
+///     `--destdir` — the latter is not accepted by `dnf install` in
+///     the SDK's dnf5 build).
+///  3. `rpm -iv --ignorearch --root=<install_root>
+///     <downloads>/*.rpm` — force-installs the pre-resolved set into
+///     the *empty* rootfs. Matches old-twoliter's `rpm2img` line 211,
+///     where the filesystem package is the first to create top-level
+///     directories like `/usr`, `/bin`, etc.
 ///
 /// The caller is responsible for supplying `arch` because dnf's
 /// arch-detection would otherwise use the host arch and refuse to
-/// install cross-built RPMs.
+/// resolve cross-built RPMs.
 pub async fn install_rpms_by_name(
     vfs: &Vfs,
     install_root: &Path,
@@ -159,10 +205,35 @@ pub async fn install_rpms_by_name(
     )
     .await?;
 
-    // Step 2: dnf install into the rootfs.
-    let install_root_q = shell_quote_path(install_root);
+    // Step 2: resolve + download the transitive RPM set into a
+    // scratch cache directory. Mirrors old-twoliter's `build.Dockerfile`
+    // `repobuild` stage:
+    //
+    //     dnf -y --disablerepo '*' --repofrompath repo,./rpmbuild/RPMS
+    //         --enablerepo 'repo' … --nogpgcheck --forcearch "${ARCH}"
+    //         --setopt=cachedir=/local/rpms
+    //         install --downloadonly
+    //         $(printf "bottlerocket-%s\n" metadata ...)
+    //
+    // Crucially, `--installroot` is **not** used here: dnf5
+    // pre-creates `<installroot>/usr/lib/sysimage/rpm/` (rpmdb) before
+    // the transaction runs, and if that installroot is the real
+    // rootfs the `bottlerocket-filesystem` RPM's CPIO payload later
+    // fails to unpack `/usr` (`cpio: File from package already exists
+    // as a directory`). Old-twoliter avoids this by never pointing
+    // dnf at the target rootfs at all — the actual install into the
+    // rootfs happens via a separate `rpm -iv --root` step
+    // (rpm2img L211), which is what [`install_rpms`] does below.
+    //
+    // Downloaded RPMs land in `<cachedir>/<repo-id-hash>/packages/`
+    // (dnf5 layout). We don't flatten — [`install_rpms`] walks the
+    // tree recursively via `list_files_recursive`.
+    let download_dir = vfs.create_dir("dnf-download").await?;
+    let download_dir_path = download_dir.path().to_path_buf();
+
+    let download_dir_q = shell_quote_path(&download_dir_path);
     let repofrompath = format!("--repofrompath=local,{package_dir_q}");
-    let installroot = format!("--installroot={install_root_q}");
+    let cachedir = format!("--setopt=cachedir={download_dir_q}");
     let forcearch = format!("--forcearch={arch}");
 
     let mut argv: Vec<String> = vec![
@@ -172,20 +243,30 @@ pub async fn install_rpms_by_name(
         "--enablerepo=local".into(),
         "--nogpgcheck".into(),
         forcearch,
-        installroot,
+        cachedir,
         "install".into(),
+        "--downloadonly".into(),
     ];
     for name in package_names {
         argv.push(crate::image::vfs_ext::shell_quote(name));
     }
 
-    vfs.command("dnf_install_rootfs", "dnf", &argv).await?;
+    vfs.command("dnf_resolve_rpms", "dnf", &argv).await?;
+
+    // Step 3: force-install the resolved set into the empty rootfs.
+    install_rpms(vfs, install_root, &download_dir_path).await?;
     Ok(())
 }
 
 /// Query installed RPMs. Returns raw stdout from
 /// `rpm -qa --root <root> --queryformat <fmt>` for the caller to parse.
 /// Ports the `rpm -qa` call inside `generate_application_inventory`.
+///
+/// The `_dbpath` override matches [`install_rpms`]: the DB lives at
+/// `<root>/var/lib/rpm`, not the SDK-default
+/// `<root>/usr/lib/sysimage/rpm`. Without this override `rpm -qa`
+/// would look at an empty (or non-existent) DB path and return
+/// nothing.
 pub async fn queryformat(vfs: &Vfs, install_root: &Path, queryformat: &str) -> Result<Vec<u8>> {
     let install_root_q = shell_quote_path(install_root);
     let queryformat_q = crate::image::vfs_ext::shell_quote(queryformat);
@@ -195,6 +276,8 @@ pub async fn queryformat(vfs: &Vfs, install_root: &Path, queryformat: &str) -> R
             "rpm",
             &[
                 "-qa",
+                "--define",
+                "'_dbpath /var/lib/rpm'",
                 "--root",
                 install_root_q.as_str(),
                 "--queryformat",
