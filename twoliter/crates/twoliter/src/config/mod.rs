@@ -122,8 +122,7 @@ impl Config {
         //    at `//variants/<name>`) via `Variant::to_edo`, receiving
         //    the project-wide kit list resolved above and the set of
         //    in-repo package names collected during the packages walk.
-        let (variant_dir, variant_addr) =
-            (path.join("variants"), Addr::parse("//variants")?);
+        let (variant_dir, variant_addr) = (path.join("variants"), Addr::parse("//variants")?);
         if variant_dir.try_exists().context(error::IoSnafu)? {
             Self::walk(
                 &Expect::Variant,

@@ -48,10 +48,7 @@ use snafu::{OptionExt, ResultExt};
 use std::path::Path;
 use tracing::trace;
 
-use crate::image::{
-    RootfsMetadata, StageRootInputs,
-    image::stage_root,
-};
+use crate::image::{RootfsMetadata, StageRootInputs, image::stage_root};
 
 use super::error;
 use super::hash::{HashInputs, hash_rootfs_inputs, twoliter_binary_digest};
@@ -101,8 +98,7 @@ impl FromElement for VariantRootfsTransform {
             .unwrap_or_default();
 
         let sdk_element = {
-            let default_scope: Vec<_> =
-                scope_table.get("default").cloned().unwrap_or_default();
+            let default_scope: Vec<_> = scope_table.get("default").cloned().unwrap_or_default();
             match default_scope.as_slice() {
                 [single] => single.clone(),
                 [] => return error::MissingSdkSourceSnafu.fail(),
@@ -464,9 +460,8 @@ impl TransformImpl for VariantRootfsTransform {
             // twoliter's `printf "bottlerocket-%s\n" metadata
             // metadata-sbom ${PACKAGES}` line in the
             // `build.Dockerfile` `repobuild` stage.
-            let mut install_names: Vec<String> = Vec::with_capacity(
-                self.options.included_packages.len() + 2,
-            );
+            let mut install_names: Vec<String> =
+                Vec::with_capacity(self.options.included_packages.len() + 2);
             install_names.push("bottlerocket-metadata".to_string());
             install_names.push("bottlerocket-metadata-sbom".to_string());
             for name in &self.options.included_packages {
@@ -512,13 +507,8 @@ impl TransformImpl for VariantRootfsTransform {
             // (e) guest images: copy each staged guest-image tree
             // into root-mount/local/guest-images/<arch-name>/<ver>/.
             if !self.options.guest_images.is_empty() {
-                copy_guest_trees(
-                    &vfs,
-                    log,
-                    Path::new("deps/guest-images"),
-                    &root_mount_path,
-                )
-                .await?;
+                copy_guest_trees(&vfs, log, Path::new("deps/guest-images"), &root_mount_path)
+                    .await?;
             }
 
             // Enumerate installed RPM names for the metadata layer.
@@ -596,8 +586,7 @@ impl TransformImpl for VariantRootfsTransform {
                 (&metadata_path, rootfs_media::METADATA_JSON, "metadata.json"),
                 (&sbom_out, rootfs_media::SBOM_SPDX, "sbom.spdx.json"),
             ] {
-                write_layer(ctx, env, src, media, hint, "variant-rootfs", &mut artifact)
-                    .await?;
+                write_layer(ctx, env, src, media, hint, "variant-rootfs", &mut artifact).await?;
             }
 
             ctx.storage().safe_save(&artifact).await?;

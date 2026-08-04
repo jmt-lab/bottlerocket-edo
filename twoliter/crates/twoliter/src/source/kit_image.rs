@@ -226,10 +226,12 @@ impl SourceImpl for KitImageSource {
         // the stored digest to the OCI layer's digest so republish
         // can pass the blob through untouched.
         for image_layer in image.layers().iter() {
-            let edo_compression = map_layer_compression(image_layer.media_type())
-                .with_context(|| error::UnsupportedLayerMediaTypeSnafu {
-                    uri: self.uri.clone(),
-                    media_type: format!("{:?}", image_layer.media_type()),
+            let edo_compression =
+                map_layer_compression(image_layer.media_type()).with_context(|| {
+                    error::UnsupportedLayerMediaTypeSnafu {
+                        uri: self.uri.clone(),
+                        media_type: format!("{:?}", image_layer.media_type()),
+                    }
                 })?;
 
             // Strip the `sha256:` prefix if present so the digest we

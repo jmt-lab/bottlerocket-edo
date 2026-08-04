@@ -12,13 +12,13 @@
 //!   selecting a single-bank residual-ROOT layout.
 //! - EIF sidecar disk: `set_eif_partition_sizes` → [`eif_partition_layout`].
 
-use snafu::ResultExt;
+use snafu::{OptionExt, ResultExt};
 use std::fmt;
 use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::image::error::Error;
+use crate::image::error::{Error, PartitionSnafu};
 use crate::image::model::{ImageFeatures, ImageLayout, PartitionPlan};
 use crate::image::vfs_ext::shell_quote_path;
 
@@ -184,9 +184,7 @@ pub struct DiskLayout {
 /// serialize in three separate places).
 ///
 /// Serialized as JSON with kebab-case keys.
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DiskLayoutManifest {
     /// The disk-layout math result: OS-disk partition layout plus an
@@ -324,21 +322,21 @@ pub fn compute_partition_layout(
     // wrong GPT.
     let plan_str = format!("{plan:?}");
     let scale = |factor: u32, name: &str| -> Result<u32, Error> {
-        os_gib.checked_mul(factor).ok_or_else(|| Error::Partition {
+        os_gib.checked_mul(factor).with_context(|| PartitionSnafu {
             plan: plan_str.clone(),
             feature: name.to_string(),
             reason: format!("os_gib ({os_gib}) * {name} ({factor}) overflowed u32"),
         })
     };
     let add = |a: u32, b: u32, name: &str| -> Result<u32, Error> {
-        a.checked_add(b).ok_or_else(|| Error::Partition {
+        a.checked_add(b).with_context(|| PartitionSnafu {
             plan: plan_str.clone(),
             feature: name.to_string(),
             reason: format!("offset overflow while placing {name} ({a} + {b})"),
         })
     };
     let mul = |a: u32, b: u32, name: &str| -> Result<u32, Error> {
-        a.checked_mul(b).ok_or_else(|| Error::Partition {
+        a.checked_mul(b).with_context(|| PartitionSnafu {
             plan: plan_str.clone(),
             feature: name.to_string(),
             reason: format!("size overflow while doubling {name} ({a} * {b})"),
@@ -406,9 +404,9 @@ pub fn compute_partition_layout(
             .and_then(|v| v.checked_sub(boot_a_size))
             .and_then(|v| v.checked_sub(hash_a_size))
             .and_then(|v| v.checked_sub(GPT_MIB))
-            .ok_or_else(|| Error::Partition {
+            .with_context(|| PartitionSnafu {
                 plan: plan_str.clone(),
-                feature: "first_party_stack=no".into(),
+                feature: "first_party_stack=no".to_string(),
                 reason: format!("image size {os_gib} GiB is too small for stripped layout"),
             })?;
         if root_a_mib == 0 {
@@ -454,9 +452,9 @@ pub fn compute_partition_layout(
     // subtraction must be checked so a change to the scale factor
     // constants can't silently produce an underflow / debug-build panic.
     let reserved_pre = scale(RESERVE_SCALE_FACTOR, "reserve_scale")?;
-    let reserved_mib = reserved_pre.checked_sub(EFI_MIB).ok_or_else(|| Error::Partition {
+    let reserved_mib = reserved_pre.checked_sub(EFI_MIB).with_context(|| PartitionSnafu {
         plan: plan_str.clone(),
-        feature: "reserved_mib".into(),
+        feature: "reserved_mib".to_string(),
         reason: format!(
             "os_gib ({os_gib}) * RESERVE_SCALE_FACTOR ({RESERVE_SCALE_FACTOR}) = {reserved_pre} \
              is smaller than EFI_MIB ({EFI_MIB})"
@@ -466,9 +464,9 @@ pub fn compute_partition_layout(
     let private_mib = private_pre
         .checked_sub(OVERHEAD_MIB)
         .and_then(|v| v.checked_sub(DATA_A_MIB))
-        .ok_or_else(|| Error::Partition {
+        .with_context(|| PartitionSnafu {
             plan: plan_str.clone(),
-            feature: "private_mib".into(),
+            feature: "private_mib".to_string(),
             reason: format!(
                 "os_gib ({os_gib}) * PRIVATE_SCALE_FACTOR ({PRIVATE_SCALE_FACTOR}) = {private_pre} \
                  leaves no room after OVERHEAD_MIB ({OVERHEAD_MIB}) + DATA_A_MIB ({DATA_A_MIB})"
@@ -589,9 +587,9 @@ pub fn compute_partition_layout(
     offset = add(offset, private_mib, "PRIVATE")?;
 
     // data_gib is validated > 0 above; check every arithmetic step.
-    let data_mib = data_gib.checked_mul(1024).ok_or_else(|| Error::Partition {
+    let data_mib = data_gib.checked_mul(1024).with_context(|| PartitionSnafu {
         plan: plan_str.clone(),
-        feature: "data_image_size_gib_to_mib".into(),
+        feature: "data_image_size_gib_to_mib".to_string(),
         reason: format!("data_gib ({data_gib}) * 1024 overflowed u32"),
     })?;
 
@@ -607,9 +605,9 @@ pub fn compute_partition_layout(
             // DATA-B lives on a separate data disk. First+last MiB
             // reserved for GPT; the rest is DATA-B.
             let gpt_overhead = mul(GPT_MIB, 2, "GPT overhead")?;
-            let data_b_size = data_mib.checked_sub(gpt_overhead).ok_or_else(|| Error::Partition {
+            let data_b_size = data_mib.checked_sub(gpt_overhead).with_context(|| PartitionSnafu {
                 plan: plan_str.clone(),
-                feature: "data_image_size_gib".into(),
+                feature: "data_image_size_gib".to_string(),
                 reason: format!(
                     "data_gib ({data_gib}) is too small to fit GPT overhead ({gpt_overhead} MiB)"
                 ),
@@ -666,9 +664,9 @@ pub fn eif_partition_layout(
     let minimum_mib = rootfs_mib
         .checked_add(verity_mib)
         .and_then(|v| v.checked_add(2))
-        .ok_or_else(|| Error::Partition {
-            plan: "eif".into(),
-            feature: "minimum_mib".into(),
+        .with_context(|| PartitionSnafu {
+            plan: "eif".to_string(),
+            feature: "minimum_mib".to_string(),
             reason: format!(
                 "rootfs_mib ({rootfs_mib}) + verity_mib ({verity_mib}) + 2 overflowed u32"
             ),
@@ -692,16 +690,16 @@ pub fn eif_partition_layout(
 
     let root_end = 1u32
         .checked_add(root_a_mib)
-        .ok_or_else(|| Error::Partition {
-            plan: "eif".into(),
-            feature: "root_end".into(),
+        .with_context(|| PartitionSnafu {
+            plan: "eif".to_string(),
+            feature: "root_end".to_string(),
             reason: format!("1 + root_a_mib ({root_a_mib}) overflowed u32"),
         })?;
     let hash_end = root_end
         .checked_add(verity_mib)
-        .ok_or_else(|| Error::Partition {
-            plan: "eif".into(),
-            feature: "hash_end".into(),
+        .with_context(|| PartitionSnafu {
+            plan: "eif".to_string(),
+            feature: "hash_end".to_string(),
             reason: format!("root_end ({root_end}) + verity_mib ({verity_mib}) overflowed u32"),
         })?;
 
@@ -768,7 +766,11 @@ pub fn eif_partition_layout(
 ///
 /// The `plan` argument determines which PARTUUID each data slot gets
 /// (see [`partition_uuid`]).
-pub fn render_sgdisk_argv(layout: &PartitionLayout, plan: PartitionPlan, disk: &Path) -> Vec<String> {
+pub fn render_sgdisk_argv(
+    layout: &PartitionLayout,
+    plan: PartitionPlan,
+    disk: &Path,
+) -> Vec<String> {
     let mut argv: Vec<String> = Vec::with_capacity(layout.entries.len() * 4 + 4);
     argv.push("-Z".into());
     for (idx, e) in layout.entries.iter().enumerate() {
@@ -1034,8 +1036,7 @@ mod tests {
                 },
             ],
         };
-        let argv =
-            render_sgdisk_argv(&layout, PartitionPlan::Unified, Path::new("/tmp/os.img"));
+        let argv = render_sgdisk_argv(&layout, PartitionPlan::Unified, Path::new("/tmp/os.img"));
         assert_eq!(argv[0], "-Z");
         assert!(argv.last().unwrap().contains("/tmp/os.img"));
         // Two entries -> at least two `-n` flags.
@@ -1104,10 +1105,8 @@ mod tests {
 
     fn sample_verity() -> crate::image::verity::VerityInfo {
         crate::image::verity::VerityInfo {
-            root_hash:
-                "0000000000000000000000000000000000000000000000000000000000000000".into(),
-            salt:
-                "1111111111111111111111111111111111111111111111111111111111111111".into(),
+            root_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            salt: "1111111111111111111111111111111111111111111111111111111111111111".into(),
             data_blocks_4k: 1,
             data_blocks_512: 8,
             hash_algorithm: crate::image::verity::VERITY_HASH_ALGORITHM.to_string(),
@@ -1132,8 +1131,7 @@ mod tests {
             verity_info: sample_verity(),
         };
         let bytes = manifest.to_json_bytes().expect("serialize");
-        let parsed: DiskLayoutManifest =
-            serde_json::from_slice(&bytes).expect("round-trip");
+        let parsed: DiskLayoutManifest = serde_json::from_slice(&bytes).expect("round-trip");
         assert_eq!(parsed, manifest);
     }
 

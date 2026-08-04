@@ -168,8 +168,8 @@ pub async fn build_metadata_rpm(
     use crate::image::error::VariantNameSnafu;
     use snafu::ResultExt;
 
-    let segments = VariantSegments::parse(inputs.variant_name)
-        .with_context(|_| VariantNameSnafu)?;
+    let segments =
+        VariantSegments::parse(inputs.variant_name).with_context(|_| VariantNameSnafu)?;
 
     // Step 1: rpmbuild tree.
     //
@@ -210,10 +210,7 @@ pub async fn build_metadata_rpm(
     // and `/root/.rpmmacros` (which it picks up unconditionally when
     // running as root) — same belt-and-braces pattern as
     // `PackageTransform`.
-    let rpmmacros_src = format!(
-        "/usr/lib/rpm/platform/{}-bottlerocket/macros",
-        inputs.arch
-    );
+    let rpmmacros_src = format!("/usr/lib/rpm/platform/{}-bottlerocket/macros", inputs.arch);
     vfs.copy(&rpmmacros_src, &workdir_vfs.path().join(".rpmmacros"))
         .await?;
     vfs.copy(&rpmmacros_src, "/root/.rpmmacros").await?;
@@ -247,22 +244,10 @@ pub async fn build_metadata_rpm(
     let topdir_arg = format!("--define \"_topdir {:?}\"", rpmbuild_path);
     let target_cpu_arg = format!("--define \"_target_cpu {}\"", inputs.arch);
     let variant_arg = format!("--define \"_cross_variant {}\"", segments.name);
-    let platform_arg = format!(
-        "--define \"_cross_variant_platform {}\"",
-        segments.platform
-    );
-    let runtime_arg = format!(
-        "--define \"_cross_variant_runtime {}\"",
-        segments.runtime
-    );
-    let family_arg = format!(
-        "--define \"_cross_variant_family {}\"",
-        segments.family
-    );
-    let flavor_arg = format!(
-        "--define \"_cross_variant_flavor {}\"",
-        segments.flavor
-    );
+    let platform_arg = format!("--define \"_cross_variant_platform {}\"", segments.platform);
+    let runtime_arg = format!("--define \"_cross_variant_runtime {}\"", segments.runtime);
+    let family_arg = format!("--define \"_cross_variant_family {}\"", segments.family);
+    let flavor_arg = format!("--define \"_cross_variant_flavor {}\"", segments.flavor);
 
     let mut argv: Vec<String> = vec![
         "-bb".into(),
@@ -294,11 +279,7 @@ pub async fn build_metadata_rpm(
     vfs.command(
         "copy_metadata_rpm",
         "cp",
-        &[
-            "-r".to_string(),
-            copy_glob,
-            format!("{:?}", output_dir_abs),
-        ],
+        &["-r".to_string(), copy_glob, format!("{:?}", output_dir_abs)],
     )
     .await?;
     Ok(())
@@ -653,10 +634,7 @@ mod tests {
         };
         let bytes = metadata.to_json_bytes().unwrap();
         let text = std::str::from_utf8(&bytes).unwrap();
-        assert!(
-            text.contains("\"file-contexts-path\""),
-            "text={text}"
-        );
+        assert!(text.contains("\"file-contexts-path\""), "text={text}");
         assert!(text.contains("\"packaged-rpms\""), "text={text}");
     }
 

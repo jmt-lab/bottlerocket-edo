@@ -35,9 +35,7 @@ use async_trait::async_trait;
 use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
-    storage::{
-        Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType,
-    },
+    storage::{Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType},
     transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
 };
 use snafu::{OptionExt, ResultExt};
@@ -226,12 +224,8 @@ impl TransformImpl for VariantDiskTransform {
                 &feature_set,
                 Some(&self.options.image_format),
             );
-            validate_image_features(
-                &feature_set,
-                &resolved,
-                Some(&self.options.image_format),
-            )
-            .context(error::BrImageSnafu)?;
+            validate_image_features(&feature_set, &resolved, Some(&self.options.image_format))
+                .context(error::BrImageSnafu)?;
 
             let vfs = Vfs::new(&id, env, log).await?;
 
@@ -278,13 +272,11 @@ impl TransformImpl for VariantDiskTransform {
             let file_contexts_path = rootfs_metadata.file_contexts_path.clone();
 
             // (a) partition math.
-            let disk_layout: DiskLayout =
-                compute_partition_layout(&resolved, &features_bitset)
-                    .context(error::BrImageSnafu)?;
+            let disk_layout: DiskLayout = compute_partition_layout(&resolved, &features_bitset)
+                .context(error::BrImageSnafu)?;
 
             // (b) truncate + sgdisk on OS + optional data disk.
-            let os_total_mib =
-                (resolved.os_image_size_gib().0 as u32).saturating_mul(1024);
+            let os_total_mib = (resolved.os_image_size_gib().0 as u32).saturating_mul(1024);
             let os_disk = work_path.join("os.img");
             apply_partition_layout(
                 &vfs,
@@ -297,8 +289,7 @@ impl TransformImpl for VariantDiskTransform {
             .context(error::BrImageSnafu)?;
 
             let (data_disk, has_data) = if let Some(data_layout) = &disk_layout.data_disk {
-                let data_total_mib =
-                    (resolved.data_image_size_gib.0 as u32).saturating_mul(1024);
+                let data_total_mib = (resolved.data_image_size_gib.0 as u32).saturating_mul(1024);
                 let path = work_path.join("data.img");
                 apply_partition_layout(
                     &vfs,
@@ -418,7 +409,11 @@ impl TransformImpl for VariantDiskTransform {
             vfs.copy(&boot_scratch, &boot_scratch_out).await?;
 
             let mut layer_specs: Vec<(std::path::PathBuf, &str, &str)> = vec![
-                (os_partial_path, disk_media::OS_IMG_PARTIAL, "os.img.partial"),
+                (
+                    os_partial_path,
+                    disk_media::OS_IMG_PARTIAL,
+                    "os.img.partial",
+                ),
                 (root_scratch_out, disk_media::ROOT_EROFS_RAW, "root.erofs"),
                 (verity_scratch_out, disk_media::VERITY_RAW, "verity.raw"),
                 (boot_scratch_out, disk_media::BOOT_EXT4_RAW, "boot.ext4"),
@@ -445,11 +440,7 @@ impl TransformImpl for VariantDiskTransform {
             let manifest_bytes = manifest.to_json_bytes().context(error::BrImageSnafu)?;
             let manifest_out = out_path.join("disk-layout.json");
             vfs.write(&manifest_out, &manifest_bytes).await?;
-            layer_specs.push((
-                manifest_out,
-                disk_media::METADATA_JSON,
-                "disk-layout.json",
-            ));
+            layer_specs.push((manifest_out, disk_media::METADATA_JSON, "disk-layout.json"));
 
             for (src, media, hint) in layer_specs {
                 let writer = ctx.storage().safe_start_layer().await?;
@@ -459,10 +450,7 @@ impl TransformImpl for VariantDiskTransform {
                     .safe_finish_layer(
                         &writer,
                         &LayerOptions::builder()
-                            .media_type(MediaType::Custom(
-                                media.to_string(),
-                                Compression::None,
-                            ))
+                            .media_type(MediaType::Custom(media.to_string(), Compression::None))
                             .build(),
                     )
                     .await?;

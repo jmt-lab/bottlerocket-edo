@@ -11,7 +11,7 @@ use regex::Regex;
 
 use snafu::OptionExt;
 
-use crate::image::error::{Error, InvalidLayoutSnafu, Result};
+use crate::image::error::{Error, InvalidLayoutSnafu, ParseOutputSnafu, Result};
 use crate::image::vfs_ext::shell_quote_path;
 
 /// Bytes-per-GiB used to render the disk-size fields in the OVF.
@@ -127,12 +127,17 @@ pub fn render_ova_manifest(entries: &[(String, String)]) -> String {
 /// callers do not each need to repeat the parse.
 pub async fn sha256_of(vfs: &Vfs, path: &Path) -> Result<String> {
     let path_q = shell_quote_path(path);
-    let stdout = vfs.output("ova_sha256", "sha256sum", &[path_q.as_str()]).await?;
+    let stdout = vfs
+        .output("ova_sha256", "sha256sum", &[path_q.as_str()])
+        .await?;
     let text = String::from_utf8_lossy(&stdout);
-    let first = text.split_whitespace().next().ok_or_else(|| Error::ParseOutput {
-        tool: "sha256sum".into(),
-        reason: format!("empty output for {}", path.display()),
-    })?;
+    let first = text
+        .split_whitespace()
+        .next()
+        .with_context(|| ParseOutputSnafu {
+            tool: "sha256sum".to_string(),
+            reason: format!("empty output for {}", path.display()),
+        })?;
     if first.len() != 64 || !first.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(Error::ParseOutput {
             tool: "sha256sum".into(),
@@ -169,12 +174,10 @@ pub async fn assemble_ova(
 ) -> Result<PathBuf> {
     // File names (leaf only) — used verbatim in the manifest and as
     // `tar -C <dir> <name>` args.
-    let ovf_dir = ovf
-        .parent()
-        .ok_or_else(|| Error::InvalidLayout {
-            context: "assemble_ova".into(),
-            reason: format!("ovf path {} has no parent directory", ovf.display()),
-        })?;
+    let ovf_dir = ovf.parent().with_context(|| InvalidLayoutSnafu {
+        context: "assemble_ova".to_string(),
+        reason: format!("ovf path {} has no parent directory", ovf.display()),
+    })?;
     let ovf_name = leaf_name(ovf, "ovf")?;
     let os_vmdk_name = leaf_name(os_vmdk, "os_vmdk")?;
     let data_vmdk_name = match data_vmdk {
@@ -379,7 +382,10 @@ mod tests {
         // in exactly that order. Assert on the raw bytes.
         let entries = vec![
             ("bottlerocket-vmware-k8s.vmdk".to_string(), "aa".repeat(32)),
-            ("bottlerocket-vmware-k8s-data.vmdk".to_string(), "bb".repeat(32)),
+            (
+                "bottlerocket-vmware-k8s-data.vmdk".to_string(),
+                "bb".repeat(32),
+            ),
             ("bottlerocket-vmware-k8s.ovf".to_string(), "cc".repeat(32)),
         ];
         let text = render_ova_manifest(&entries);

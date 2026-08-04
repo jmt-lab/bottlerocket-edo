@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 use edo::environment::Vfs;
 
-use crate::image::error::{Error, Result};
+use snafu::OptionExt;
+
+use crate::image::error::{Error, InvalidLayoutSnafu, Result};
 use crate::image::model::{ImageFormat, PartitionPlan};
 
 /// Pre-flight checks for a variant-image build. Rejects impossible
@@ -396,9 +398,9 @@ pub struct StageRootInputs<'a> {
 /// `d`): install → decorate → relabel.
 pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
     if inputs.install_by_name {
-        let arch = inputs.arch.ok_or_else(|| Error::InvalidLayout {
-            context: "stage_root".into(),
-            reason: "install_by_name=true requires arch to be set".into(),
+        let arch = inputs.arch.with_context(|| InvalidLayoutSnafu {
+            context: "stage_root".to_string(),
+            reason: "install_by_name=true requires arch to be set".to_string(),
         })?;
         crate::image::rpm_install::install_rpms_by_name(
             vfs,
@@ -409,8 +411,7 @@ pub async fn stage_root(vfs: &Vfs, inputs: &StageRootInputs<'_>) -> Result<()> {
         )
         .await?;
     } else {
-        crate::image::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir)
-            .await?;
+        crate::image::rpm_install::install_rpms(vfs, inputs.root_mount, inputs.package_dir).await?;
     }
     if let Some(bundle) = inputs.ca_bundle {
         install_ca_certs(vfs, inputs.root_mount, bundle).await?;

@@ -156,11 +156,7 @@ impl TransformImpl for VariantGrubTransform {
 
         // Fold both upstream digests into a single upstream digest via
         // a stable concat with a separator.
-        let combined_upstream = format!(
-            "rootfs={}\0disk={}",
-            rootfs_id.digest(),
-            disk_id.digest()
-        );
+        let combined_upstream = format!("rootfs={}\0disk={}", rootfs_id.digest(), disk_id.digest());
 
         let inputs = HashInputs {
             arch: self.options.arch.as_deref(),
@@ -327,7 +323,8 @@ impl TransformImpl for VariantGrubTransform {
             // Move the disk stage's `os.img.partial` into our working
             // area as `os.img` (we're about to write to it).
             let os_disk = work_path.join("os.img");
-            vfs.copy(Path::new("deps/disk/os.img.partial"), &os_disk).await?;
+            vfs.copy(Path::new("deps/disk/os.img.partial"), &os_disk)
+                .await?;
 
             // Verity row for grub.cfg comes from the disk stage's
             // manifest (`verity_info` field): we don't re-run
@@ -350,7 +347,8 @@ impl TransformImpl for VariantGrubTransform {
                 .await
                 .context(error::BrImageSnafu)?;
             let bootconfig_path = out_path.join("boot-config");
-            vfs.write(&bootconfig_path, bootconfig_text.as_bytes()).await?;
+            vfs.write(&bootconfig_path, bootconfig_text.as_bytes())
+                .await?;
 
             // (h) grub install.
             install_grub_bios(
@@ -422,7 +420,11 @@ impl TransformImpl for VariantGrubTransform {
             // throughs (SBOM + metadata).
             let mut layers: Vec<(std::path::PathBuf, &str, &str)> = vec![
                 (os_img_out, grub_media::OS_IMG_RAW, "os.img"),
-                (bootconfig_path.clone(), grub_media::BOOTCONFIG, "boot-config"),
+                (
+                    bootconfig_path.clone(),
+                    grub_media::BOOTCONFIG,
+                    "boot-config",
+                ),
                 (
                     std::path::PathBuf::from("deps/disk/root.erofs"),
                     super::media_types::disk::ROOT_EROFS_RAW,
@@ -457,8 +459,7 @@ impl TransformImpl for VariantGrubTransform {
                     "sbom.spdx.json",
                 ));
             }
-            let rootfs_metadata_layer =
-                std::path::PathBuf::from("deps/rootfs/metadata.json");
+            let rootfs_metadata_layer = std::path::PathBuf::from("deps/rootfs/metadata.json");
             if vfs.try_exists(&rootfs_metadata_layer).await? {
                 layers.push((
                     rootfs_metadata_layer,
@@ -468,8 +469,7 @@ impl TransformImpl for VariantGrubTransform {
             }
 
             for (src, media, hint) in &layers {
-                write_layer(ctx, env, src, media, hint, "variant-grub", &mut artifact)
-                    .await?;
+                write_layer(ctx, env, src, media, hint, "variant-grub", &mut artifact).await?;
             }
 
             ctx.storage().safe_save(&artifact).await?;
@@ -491,5 +491,3 @@ impl TransformImpl for VariantGrubTransform {
         Ok(())
     }
 }
-
-

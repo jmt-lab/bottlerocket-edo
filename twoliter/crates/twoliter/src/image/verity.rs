@@ -5,7 +5,9 @@ use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::image::error::{Error, Result};
+use snafu::OptionExt;
+
+use crate::image::error::{Error, Result, VeritySnafu};
 use crate::image::vfs_ext::{shell_quote_path, size_bytes};
 
 /// Standard verity parameters used by every Bottlerocket image.
@@ -213,16 +215,16 @@ pub fn parse_veritysetup_output(text: &str) -> Result<VerityInfo> {
             data_blocks = rest.trim().parse().ok();
         }
     }
-    let root_hash = root_hash.ok_or_else(|| Error::Verity {
-        reason: "veritysetup output missing `Root hash:`".into(),
+    let root_hash = root_hash.with_context(|| VeritySnafu {
+        reason: "veritysetup output missing `Root hash:`".to_string(),
     })?;
-    let salt = salt.ok_or_else(|| Error::Verity {
-        reason: "veritysetup output missing `Salt:`".into(),
+    let salt = salt.with_context(|| VeritySnafu {
+        reason: "veritysetup output missing `Salt:`".to_string(),
     })?;
-    let data_blocks_4k = data_blocks.ok_or_else(|| Error::Verity {
-        reason: "veritysetup output missing `Data blocks:`".into(),
+    let data_blocks_4k = data_blocks.with_context(|| VeritySnafu {
+        reason: "veritysetup output missing `Data blocks:`".to_string(),
     })?;
-    let data_blocks_512 = data_blocks_4k.checked_mul(8).ok_or_else(|| Error::Verity {
+    let data_blocks_512 = data_blocks_4k.checked_mul(8).with_context(|| VeritySnafu {
         reason: format!(
             "data_blocks_4k {data_blocks_4k} overflows when converted to 512-byte blocks"
         ),

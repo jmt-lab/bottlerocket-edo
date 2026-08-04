@@ -253,10 +253,8 @@ impl Variant {
         // Transitively close `[variant.local-packages].packages` over
         // the in-repo `[package].depends` graph. BFS keeps ordering
         // stable and short-circuits cycles.
-        let local_closure: BTreeSet<String> = close_local_packages(
-            &self.local_packages.packages,
-            project_packages,
-        );
+        let local_closure: BTreeSet<String> =
+            close_local_packages(&self.local_packages.packages, project_packages);
 
         // Full install-name list = kit-supplied `included-packages`
         // + every in-repo package in the transitive closure. Both
@@ -296,10 +294,8 @@ impl Variant {
         // `depends()` doesn't see spurious edges. Kits are attached
         // separately as `kit-image` sources under the `"kits"` scope
         // — see the `to_edo` doc-comment above.
-        let mut rootfs_scopes: BTreeMap<String, Vec<Addr>> = BTreeMap::from([(
-            "default".to_string(),
-            vec![sdk_addr.clone()],
-        )]);
+        let mut rootfs_scopes: BTreeMap<String, Vec<Addr>> =
+            BTreeMap::from([("default".to_string(), vec![sdk_addr.clone()])]);
         if !kits.is_empty() {
             rootfs_scopes.insert("kits".to_string(), kits.to_vec());
         }
@@ -415,10 +411,7 @@ impl Variant {
         // We only emit keys the user explicitly set — the transform's
         // deserializer fills the rest from `Default`.
         if !self.image.features.is_empty() {
-            cfg.insert(
-                "image-features".to_string(),
-                json!(&self.image.features),
-            );
+            cfg.insert("image-features".to_string(), json!(&self.image.features));
         }
         // Always emit `included-packages` as a flat `Vec<String>` (an
         // empty array when the variant declares none). Downstream
@@ -428,12 +421,7 @@ impl Variant {
         cfg.insert("included-packages".to_string(), json!(all_included));
         cfg.insert(
             "packages".to_string(),
-            json!(
-                packages
-                    .iter()
-                    .map(|a| a.to_string())
-                    .collect::<Vec<_>>()
-            ),
+            json!(packages.iter().map(|a| a.to_string()).collect::<Vec<_>>()),
         );
         cfg.insert(
             "guest-images".to_string(),
@@ -468,8 +456,7 @@ fn close_local_packages(
     graph: &BTreeMap<String, Vec<String>>,
 ) -> BTreeSet<String> {
     let mut closure: BTreeSet<String> = BTreeSet::new();
-    let mut queue: std::collections::VecDeque<String> =
-        roots.iter().cloned().collect();
+    let mut queue: std::collections::VecDeque<String> = roots.iter().cloned().collect();
     while let Some(name) = queue.pop_front() {
         if !closure.insert(name.clone()) {
             continue;
@@ -568,10 +555,13 @@ partition-plan = "split"
         );
         let namespace = Addr::parse("//variants").unwrap();
         let schema = v
-            .to_edo(&namespace, &kits(&["//kits/bottlerocket/core-kit"]), &pkgs(&[]))
+            .to_edo(
+                &namespace,
+                &kits(&["//kits/bottlerocket/core-kit"]),
+                &pkgs(&[]),
+            )
             .expect("to_edo");
-        let addrs: Vec<String> =
-            schema.transforms().keys().map(|a| a.to_string()).collect();
+        let addrs: Vec<String> = schema.transforms().keys().map(|a| a.to_string()).collect();
         assert!(addrs.contains(&"//variants/aws-k8s-1.29/rootfs".to_string()));
         assert!(addrs.contains(&"//variants/aws-k8s-1.29/disk".to_string()));
         assert!(addrs.contains(&"//variants/aws-k8s-1.29/grub".to_string()));
@@ -709,7 +699,10 @@ packages = ["pkg-e"]
                 .get(&Addr::parse(&format!("//variants/x/{stage}")).unwrap())
                 .unwrap();
             let pkgs_arr = elem.config.get("packages").unwrap().as_array().unwrap();
-            assert!(pkgs_arr.is_empty(), "stage {stage} should have empty packages");
+            assert!(
+                pkgs_arr.is_empty(),
+                "stage {stage} should have empty packages"
+            );
             let included_arr = elem
                 .config
                 .get("included-packages")
@@ -922,7 +915,15 @@ version = "0.1.0"
             .transforms()
             .get(&Addr::parse("//variants/x/rootfs").unwrap())
             .unwrap();
-        assert!(rootfs.config.get("packages").unwrap().as_array().unwrap().is_empty());
+        assert!(
+            rootfs
+                .config
+                .get("packages")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             rootfs
                 .config
@@ -950,7 +951,11 @@ version = "0.1.0"
             "//kits/my-vendor/extra-3-kit",
         ]);
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &project_kits, &pkgs(&[]))
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &project_kits,
+                &pkgs(&[]),
+            )
             .unwrap();
 
         let rootfs = schema
@@ -966,8 +971,7 @@ version = "0.1.0"
 
         // Kits under `kits`, in the order supplied by the caller.
         let kits_scope = source_map.get("kits").expect("kits scope present");
-        let kit_addrs: Vec<String> =
-            kits_scope.iter().map(|a| a.to_string()).collect();
+        let kit_addrs: Vec<String> = kits_scope.iter().map(|a| a.to_string()).collect();
         assert_eq!(
             kit_addrs,
             vec![
@@ -1109,7 +1113,11 @@ version = "0.1.0"
             "//kits/my-vendor/extra-3-kit",
         ]);
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &project_kits, &pkgs(&[]))
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                &project_kits,
+                &pkgs(&[]),
+            )
             .unwrap();
         let rootfs = schema
             .transforms()

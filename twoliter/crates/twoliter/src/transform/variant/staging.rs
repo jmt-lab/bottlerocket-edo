@@ -82,7 +82,12 @@ pub async fn copy_guest_trees(
     guest_umbrella: &Path,
     root_mount_path: &Path,
 ) -> Result<(), error::Error> {
-    if !vfs.try_exists(guest_umbrella).await.map_err(map_env_err)? {
+    if !vfs
+        .try_exists(guest_umbrella)
+        .await
+        .map_err(crate::image::Error::from)
+        .context(error::BrImageSnafu)?
+    {
         return Ok(());
     }
     for arch_name_dir in crate::image::vfs_ext::list_dir_all(vfs, guest_umbrella)
@@ -101,19 +106,11 @@ pub async fn copy_guest_trees(
                 Some(n) => n.to_string_lossy().to_string(),
                 None => continue,
             };
-            let dst =
-                root_mount_path.join(format!("local/guest-images/{arch_name}/{version}"));
+            let dst = root_mount_path.join(format!("local/guest-images/{arch_name}/{version}"));
             crate::image::guest::copy_guest_artifacts(vfs, &version_dir, &dst)
                 .await
                 .context(error::BrImageSnafu)?;
         }
     }
     Ok(())
-}
-
-fn map_env_err(e: edo::environment::EnvironmentError) -> error::Error {
-    // Route through crate::image::Error whose `Env` variant is `transparent`.
-    error::Error::BrImage {
-        source: Box::new(crate::image::Error::from(e)),
-    }
 }

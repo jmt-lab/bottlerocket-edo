@@ -134,9 +134,9 @@ dependencies = [
 
 [[package]]
 name = "arc-handle"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae275e7ddc434d33805bb03e9a6450bbc73c727578b47e76348c2f54e95f6715"
+checksum = "691bca3363b851c93af8bf5dfcb066e70bd13a86bdb94caaa8ad6bc49dd2b32e"
 dependencies = [
  "proc-macro2",
  "quote",

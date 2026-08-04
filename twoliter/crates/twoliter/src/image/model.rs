@@ -326,9 +326,7 @@ impl Serialize for ImageFeature {
 ///
 /// The `BTreeSet` (rather than `HashSet`) gives deterministic iteration
 /// for messages and hashing.
-#[derive(
-    Debug, Copy, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ImageFeatures {
     pub grub_set_private_var: bool,

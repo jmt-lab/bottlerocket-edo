@@ -39,9 +39,7 @@ use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
     source::Source,
-    storage::{
-        Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType,
-    },
+    storage::{Artifact, ArtifactStageOptions, Config, Id, MediaType},
     transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
 };
 use snafu::{OptionExt, ResultExt};
@@ -49,8 +47,7 @@ use std::path::Path;
 use tracing::trace;
 
 use crate::image::{
-    ArtifactSuffix, DiskLayoutManifest, ImageFormat, VariantManifest,
-    compress::compress_image,
+    ArtifactSuffix, DiskLayoutManifest, ImageFormat, VariantManifest, compress::compress_image,
 };
 
 use super::error;
@@ -59,6 +56,7 @@ use super::layout::{image_layout, parse_arch};
 use super::media_types::final_ as output_media_types;
 use super::options::VariantImageOptions;
 use super::scope::{pick_first_in, resolve_optional};
+use super::staging::write_layer;
 
 /// Transform state for the `variant-image` finalizer.
 pub struct VariantImageTransform {
@@ -346,21 +344,20 @@ impl TransformImpl for VariantImageTransform {
                     }
                     .into());
                 }
-                let ovf_template_path = pick_first_in(&vfs, "deps/ovf-template")
-                    .await?
-                    .ok_or_else(|| error::Error::BuildStep {
-                        step: "ova".into(),
+                let ovf_template_path = pick_first_in(&vfs, "deps/ovf-template").await?.context(
+                    error::BuildStepSnafu {
+                        step: "ova".to_string(),
                         reason: "`ovf-template` source scope resolved but produced no file \
                                  under deps/ovf-template/ (empty source?)"
-                            .into(),
-                    })?;
+                            .to_string(),
+                    },
+                )?;
                 let template_bytes = vfs.read(&ovf_template_path).await?;
-                let template_text = String::from_utf8(template_bytes).map_err(|e| {
-                    error::Error::BuildStep {
+                let template_text =
+                    String::from_utf8(template_bytes).map_err(|e| error::Error::BuildStep {
                         step: "ova".into(),
                         reason: format!("OVF template is not valid UTF-8: {e}"),
-                    }
-                })?;
+                    })?;
                 let os_vmdk = out_path.join("os.img.vmdk");
                 // Pre-decomp monolith never emitted a `data.img.vmdk`
                 // (since `data_disk` is `None` under Split at the
@@ -416,21 +413,16 @@ impl TransformImpl for VariantImageTransform {
 
             for (file, media) in layer_specs {
                 let entry = out_path.join(file);
-                let writer = ctx.storage().safe_start_layer().await?;
-                env.read_stream(&entry, writer.clone()).await?;
-                let layer = ctx
-                    .storage()
-                    .safe_finish_layer(
-                        &writer,
-                        &LayerOptions::builder()
-                            .media_type(MediaType::Custom(
-                                media.to_string(),
-                                Compression::None,
-                            ))
-                            .build(),
-                    )
-                    .await?;
-                artifact.layers_mut().push(layer);
+                write_layer(
+                    ctx,
+                    env,
+                    &entry,
+                    media,
+                    file,
+                    "variant-image",
+                    &mut artifact,
+                )
+                .await?;
             }
 
             ctx.storage().safe_save(&artifact).await?;

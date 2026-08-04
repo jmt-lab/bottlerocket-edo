@@ -19,6 +19,7 @@ use crate::image::{
     Arch, ImageLayout,
     partition::{DiskLayout, Part, PartitionEntry},
 };
+use snafu::OptionExt;
 
 use super::error;
 use super::options::VariantImageOptions;
@@ -72,7 +73,7 @@ pub fn partition_entry<'a>(
     disk_layout
         .os_disk
         .get(part)
-        .ok_or_else(|| error::Error::BuildStep {
+        .with_context(|| error::BuildStepSnafu {
             step: format!("partition-lookup:{}", part.short_name()),
             reason: format!("{} absent from computed OS-disk layout", part.short_name()),
         })

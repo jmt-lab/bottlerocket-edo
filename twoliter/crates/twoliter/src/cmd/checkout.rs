@@ -13,10 +13,10 @@ use clap::Parser;
 use edo::context::Addr;
 use edo::storage::Compression;
 use edo::storage::MediaType;
-use snafu::ResultExt;
+use snafu::{OptionExt, ResultExt};
 use std::pin::Pin;
-use tokio::fs::create_dir_all;
-use tokio::io::BufReader;
+use tokio::fs::{File, create_dir_all};
+use tokio::io::{AsyncRead, BufReader, copy};
 use tokio_tar::Archive;
 
 use crate::Args;
@@ -56,7 +56,7 @@ impl Checkout {
             let reader = BufReader::new(ctx.storage().safe_read(layer).await?);
             match layer.media_type() {
                 MediaType::Tar(compression) => {
-                    let reader: Pin<Box<dyn tokio::io::AsyncRead>> = match compression {
+                    let reader: Pin<Box<dyn AsyncRead>> = match compression {
                         Compression::Bzip2 => Box::pin(BzDecoder::new(reader)),
                         Compression::Lz4 => Box::pin(Lz4Decoder::new(reader)),
                         Compression::Lzma => Box::pin(LzmaDecoder::new(reader)),
@@ -69,9 +69,33 @@ impl Checkout {
                     archive.unpack(&self.output).await.context(error::IoSnafu)?;
                 }
                 value => {
-                    tracing::error!(
-                        "skipping artifact layer with media_type {value} as we do not know how to extract it"
+                    // Non-archive layer: honor the artifact's path hint
+                    // (relative path recorded when the layer was
+                    // emitted) and stream the raw layer bytes to
+                    // `<output>/<hint>`. If no hint was recorded we
+                    // refuse to guess — a digest-named file with an
+                    // unknown extension is worse than a clear error
+                    // pointing at the producing transform.
+                    let hint = artifact
+                        .config()
+                        .path_hint_for(layer.digest())
+                        .with_context(|| error::CheckoutLayerMissingPathHintSnafu {
+                            media_type: value.to_string(),
+                            digest: layer.digest().digest(),
+                        })?;
+                    let dest = self.output.join(hint);
+                    if let Some(parent) = dest.parent() {
+                        if !parent.as_os_str().is_empty() {
+                            create_dir_all(parent).await.context(error::IoSnafu)?;
+                        }
+                    }
+                    tracing::debug!(
+                        "writing layer with media_type {value} to {}",
+                        dest.display()
                     );
+                    let mut reader: Pin<Box<dyn AsyncRead>> = Box::pin(reader);
+                    let mut file = File::create(&dest).await.context(error::IoSnafu)?;
+                    copy(&mut reader, &mut file).await.context(error::IoSnafu)?;
                 }
             }
         }

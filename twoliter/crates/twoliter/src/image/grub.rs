@@ -6,9 +6,13 @@ use std::path::Path;
 
 use edo::environment::Vfs;
 
-use crate::image::error::{Error, Result};
+use snafu::OptionExt;
+
+use crate::image::error::{Error, InvalidLayoutSnafu, Result};
 use crate::image::model::Arch;
-use crate::image::secure_boot::{Sbsetup, provide_certs, sign_grub, sign_mokm, sign_shim, unembed_grub, zero_shim};
+use crate::image::secure_boot::{
+    Sbsetup, provide_certs, sign_grub, sign_mokm, sign_shim, unembed_grub, zero_shim,
+};
 use crate::image::vfs_ext::{list_files, shell_quote, shell_quote_path};
 
 /// Configuration for [`install_grub_bios`].
@@ -165,22 +169,24 @@ pub async fn install_grub_uefi<'a>(vfs: &Vfs, inputs: &GrubUefiInstall<'a>) -> R
 
     // Step 3: sign or zero.
     if inputs.uefi_secure_boot {
-        let vendor_cert_der = inputs.vendor_cert_der.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires vendor_cert_der".into(),
+        let vendor_cert_der = inputs.vendor_cert_der.with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: "uefi_secure_boot=true requires vendor_cert_der".to_string(),
         })?;
-        let db_cer = inputs.db_cer.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires db_cer".into(),
+        let db_cer = inputs.db_cer.with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: "uefi_secure_boot=true requires db_cer".to_string(),
         })?;
-        let vendor_cer = inputs.vendor_cer.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires vendor_cer".into(),
+        let vendor_cer = inputs.vendor_cer.with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: "uefi_secure_boot=true requires vendor_cer".to_string(),
         })?;
-        let config_sign_pubkey = inputs.config_sign_pubkey.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires config_sign_pubkey".into(),
-        })?;
+        let config_sign_pubkey = inputs
+            .config_sign_pubkey
+            .with_context(|| InvalidLayoutSnafu {
+                context: "install_grub_uefi".to_string(),
+                reason: "uefi_secure_boot=true requires config_sign_pubkey".to_string(),
+            })?;
         sign_shim(vfs, &shim, inputs.arch, vendor_cert_der, vendor_obj, db_cer).await?;
         sign_mokm(vfs, &mokm, inputs.arch, vendor_cer).await?;
         sign_grub(vfs, &grub, inputs.arch, config_sign_pubkey, vendor_cer).await?;
@@ -201,12 +207,7 @@ pub async fn install_grub_uefi<'a>(vfs: &Vfs, inputs: &GrubUefiInstall<'a>) -> R
     vfs.command(
         "esp_dd_zero",
         "dd",
-        &[
-            "if=/dev/zero",
-            scratch_of.as_str(),
-            "bs=1M",
-            count.as_str(),
-        ],
+        &["if=/dev/zero", scratch_of.as_str(), "bs=1M", count.as_str()],
     )
     .await?;
 
@@ -260,20 +261,25 @@ pub async fn install_grub_uefi<'a>(vfs: &Vfs, inputs: &GrubUefiInstall<'a>) -> R
     // Step 5: seed signing certs onto the ESP for firmware-UI import
     // (secure-boot only).
     if inputs.uefi_secure_boot {
-        let db_crt = inputs.db_crt.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires db_crt".into(),
+        let db_crt = inputs.db_crt.with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: "uefi_secure_boot=true requires db_crt".to_string(),
         })?;
-        let db_cer = inputs.db_cer_for_esp.ok_or_else(|| Error::InvalidLayout {
-            context: "install_grub_uefi".into(),
-            reason: "uefi_secure_boot=true requires db_cer_for_esp".into(),
+        let db_cer = inputs.db_cer_for_esp.with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: "uefi_secure_boot=true requires db_cer_for_esp".to_string(),
         })?;
         provide_certs(vfs, inputs.efi_scratch, db_crt, db_cer).await?;
     }
 
     // Step 6: dd the ESP into the OS disk at the EFI-A offset.
-    crate::image::image::dd_partition(vfs, inputs.efi_scratch, inputs.os_image, inputs.efi_offset_mib)
-        .await
+    crate::image::image::dd_partition(
+        vfs,
+        inputs.efi_scratch,
+        inputs.os_image,
+        inputs.efi_offset_mib,
+    )
+    .await
 }
 
 /// Resolve the scratch path [`install_grub_uefi`] passes to
@@ -318,20 +324,18 @@ fn resolve_vendor_obj<'a>(
 ///
 /// Used by [`install_grub_uefi`] to discover shim / grub / mokm
 /// filenames the grub RPM shipped.
-async fn pick_first(
-    vfs: &Vfs,
-    dir: &Path,
-    glob: &str,
-    role: &str,
-) -> Result<std::path::PathBuf> {
+async fn pick_first(vfs: &Vfs, dir: &Path, glob: &str, role: &str) -> Result<std::path::PathBuf> {
     let matches = list_files(vfs, dir, glob).await?;
-    matches.into_iter().next().ok_or_else(|| Error::InvalidLayout {
-        context: "install_grub_uefi".into(),
-        reason: format!(
-            "no {role} binary found under {} matching `{glob}`",
-            dir.display()
-        ),
-    })
+    matches
+        .into_iter()
+        .next()
+        .with_context(|| InvalidLayoutSnafu {
+            context: "install_grub_uefi".to_string(),
+            reason: format!(
+                "no {role} binary found under {} matching `{glob}`",
+                dir.display()
+            ),
+        })
 }
 
 /// Options for [`render_grub_cfg`].

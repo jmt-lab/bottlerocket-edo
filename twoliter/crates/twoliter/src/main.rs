@@ -33,6 +33,13 @@ pub mod error {
             "cannot publish artifact layer with media type {media_type}: only `Tar(_)` layers are supported"
         ))]
         UnsupportedPublishLayerMediaType { media_type: String },
+        #[snafu(display(
+            "cannot checkout artifact layer with media type {media_type} (digest {digest}): \
+             layer has no path_hint recorded on the artifact manifest, so we cannot pick a \
+             filename for it. This is a producer bug — the transform that emitted this layer \
+             should record `config.path_hints[digest] = <filename>`."
+        ))]
+        CheckoutLayerMissingPathHint { media_type: String, digest: String },
         #[snafu(transparent)]
         Source { source: edo::source::SourceError },
         #[snafu(transparent)]

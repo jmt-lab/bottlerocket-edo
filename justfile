@@ -368,7 +368,10 @@ sync-kit kit:
 
 sync-bob:
     @rm -rf variants/*
+    @rm -rf kits/bottlerocket
     @echo "creating variant.tomls"
     @just _variant-toml
+    @echo "creating local kit.toml for bottlerocket (kit-src + kit-rust vendoring)"
+    @just _kit-toml bottlerocket
     @echo "creating package.toml files"
     @just _sync-packages bottlerocket

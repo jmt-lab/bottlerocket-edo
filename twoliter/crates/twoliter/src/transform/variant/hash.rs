@@ -105,12 +105,8 @@ pub fn hash_disk_inputs(inputs: &HashInputs<'_>) -> Result<String, error::Error>
     if let Some(upstream) = &inputs.upstream_stage_digest {
         hash.update(upstream.as_bytes());
     }
-    hash.update(
-        serde_json::to_vec(&inputs.image_features).context(error::SerializationSnafu)?,
-    );
-    hash.update(
-        serde_json::to_vec(&inputs.resolved_layout).context(error::SerializationSnafu)?,
-    );
+    hash.update(serde_json::to_vec(&inputs.image_features).context(error::SerializationSnafu)?);
+    hash.update(serde_json::to_vec(&inputs.resolved_layout).context(error::SerializationSnafu)?);
     hash.update(inputs.image_format.to_string().as_bytes());
     hash.update(format!("{:?}", inputs.partition_plan).as_bytes());
     hash.update(inputs.twoliter_binary_digest.as_bytes());
@@ -193,23 +189,17 @@ pub fn hash_image_inputs(inputs: &HashInputs<'_>) -> Result<String, error::Error
 /// `br-image` invalidates every variant's cache.
 pub fn twoliter_binary_digest() -> &'static str {
     static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| {
-        match compute_twoliter_binary_digest() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(
-                    component = "transform",
-                    type_ = "variant-image",
-                    "unable to hash twoliter binary ({e}); falling back to version string. \
+    CACHE.get_or_init(|| match compute_twoliter_binary_digest() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                component = "transform",
+                type_ = "variant-image",
+                "unable to hash twoliter binary ({e}); falling back to version string. \
                      Cache invalidation will only trigger on version bumps until this is \
                      resolved."
-                );
-                format!(
-                    "{}-{}",
-                    env!("CARGO_PKG_NAME"),
-                    env!("CARGO_PKG_VERSION")
-                )
-            }
+            );
+            format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         }
     })
 }

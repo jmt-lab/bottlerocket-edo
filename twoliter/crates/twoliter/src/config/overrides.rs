@@ -28,7 +28,7 @@ use edo::context::{Addr, ContextResult, Element, Schema};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use snafu::ensure;
+use snafu::{OptionExt, ensure};
 
 use super::twoliter::{Twoliter, VendorSpec};
 
@@ -168,7 +168,7 @@ impl TwoliterOverride {
             let vendor_spec =
                 base.vendor
                     .get(&ko.vendor)
-                    .ok_or_else(|| error::Error::UnknownVendor {
+                    .with_context(|| error::UnknownVendorSnafu {
                         name: ko.vendor.clone(),
                     })?;
             // Registry the base would use, unless a `[vendor.<name>]`
@@ -202,7 +202,7 @@ impl TwoliterOverride {
             let vendor_spec =
                 base.vendor
                     .get(&sdk_ov.vendor)
-                    .ok_or_else(|| error::Error::UnknownVendor {
+                    .with_context(|| error::UnknownVendorSnafu {
                         name: sdk_ov.vendor.clone(),
                     })?;
             let effective_registry = self
