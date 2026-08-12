@@ -1,3 +1,3 @@
-mod partition;
-mod model;
 mod constants;
+mod model;
+mod partition;

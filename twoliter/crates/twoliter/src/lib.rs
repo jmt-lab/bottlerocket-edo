@@ -1,6 +1,6 @@
 use crate::kit::{KitImageSource, KitImageVendor, KitTransform};
-use crate::rpm::{PackageBuildTransform};
-use crate::variant::{RepoTransform, RPM2ImageTransform};
+use crate::rpm::PackageBuildTransform;
+use crate::variant::{RPM2ImageTransform, RepoTransform};
 use edo::{
     context::{Context, FromElement},
     source::{Source, Vendor},
@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 pub mod config;
 pub mod kit;
+pub mod model;
 pub mod rpm;
 pub mod variant;
-pub mod model;
 
 pub fn register(ctx: &Context) {
     let registry = ctx.registry();
@@ -36,9 +36,7 @@ pub fn register(ctx: &Context) {
     registry.register_transform(
         "variant-repo",
         Arc::new(async |element, ctx| {
-            Ok(Transform::new(
-                RepoTransform::new(&element, &ctx).await?,
-            ))
+            Ok(Transform::new(RepoTransform::new(&element, &ctx).await?))
         }),
     );
     registry.register_transform(

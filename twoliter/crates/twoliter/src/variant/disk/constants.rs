@@ -1,6 +1,5 @@
 use crate::variant::PartitionPlan;
 
-
 /// Historical default OS-image size when the manifest does not specify.
 pub const DEFAULT_OS_IMAGE_SIZE_GIB: u16 = 2u16;
 /// Default OS-image size when `standalone-image = true` (stripped image).
@@ -8,7 +7,6 @@ pub const DEFAULT_NO_FIRST_PARTY_OS_IMAGE_SIZE_GIB: u16 = 1u16;
 pub const DEFAULT_DATA_IMAGE_SIZE_GIB: u16 = 1u16;
 pub const DEFAULT_PUBLISH_IMAGE_SIZE_HINT_GIB: u16 = 22u16;
 pub const DEFAULT_PARTITION_PLAN: PartitionPlan = PartitionPlan::Split;
-
 
 // -------------------------------------------------------------------
 // Partition-type GUIDs (from `partyplanner` §1).

@@ -1,5 +1,5 @@
-use crate::variant::VariantOptions;
 use crate::kit::apply_target_arch;
+use crate::variant::VariantOptions;
 use crate::variant::repo::metadata::BuildMetadata;
 use async_trait::async_trait;
 use edo::storage::{Artifact, Compression, LayerOptions, MediaType};
@@ -182,6 +182,13 @@ impl TransformImpl for RepoTransform {
 
             let rpm_root = vfs.entry("deps/rpms").await;
             let install_root = vfs.create_dir("install-root").await?;
+            // SBOM RPMs live in a `sbom-rpms/` subdirectory of the layer we
+            // ship, so the rpm2img transform can stage the whole layer as
+            // `rpms/` and address the SBOM set as `rpms/sbom-rpms/`. Old
+            // twoliter kept them in a sibling `/local/sbom-rpms/` directory
+            // (`build.Dockerfile:320-337`); we nest instead of siblings so
+            // a single tarball artifact carries both sets.
+            let sbom_rpms_root = install_root.create_dir("sbom-rpms").await?;
             let build_root = vfs.create_dir("build-root").await?;
 
             // (1) Build the per-variant metadata RPM.
@@ -215,7 +222,14 @@ impl TransformImpl for RepoTransform {
             .await?;
 
             // (2b) Use dnf install downloadonly to create a filtered
-            // repository for installation, resolving conflicts
+            // repository for installation, resolving conflicts.
+            //
+            // The install list mirrors `build.Dockerfile:334`:
+            // `bottlerocket-metadata` + `bottlerocket-metadata-sbom` +
+            // every requested variant package. `-metadata-sbom` is the
+            // SBOM subpackage emitted by our own `metadata.spec`; kits
+            // ship their own `-sbom` subpackages which dnf pulls in
+            // transitively through `Requires:` on the main packages.
             let package_dir = shell_quote_path(rpm_root.path());
             let repofrompath = format!("--repofrompath=local,{package_dir}");
             let forcearch = format!("--forcearch={}", self.options.arch);
@@ -223,21 +237,103 @@ impl TransformImpl for RepoTransform {
                 "--setopt=cachedir={}",
                 shell_quote_path(install_root.path())
             );
-            let mut argv: Vec<&str> = vec![
-                "--assumeyes",
-                "--disablerepo=*",
-                &repofrompath,
-                "--enablerepo=local",
-                "--nogpgcheck",
-                &forcearch,
-                &setopt,
-                "install",
-                "--downloadonly",
+            let mut argv: Vec<String> = vec![
+                "--assumeyes".into(),
+                "--disablerepo=*".into(),
+                repofrompath,
+                "--enablerepo=local".into(),
+                "--nogpgcheck".into(),
+                forcearch,
+                setopt,
+                "install".into(),
+                "--downloadonly".into(),
+                "bottlerocket-metadata".into(),
+                "bottlerocket-metadata-sbom".into(),
             ];
             for name in self.options.os.packages.iter() {
-                argv.push(name);
+                let prefixed = format!("bottlerocket-{name}");
+                argv.push(prefixed);
             }
             vfs.command("dnf_resolve", "dnf", argv).await?;
+
+            // (2c) Partition the download by filename convention. Mirrors
+            // `build.Dockerfile:335-337` but with `sbom-rpms/` nested inside
+            // `install_root` rather than a sibling:
+            //
+            //   - every SBOM subpackage moves to `install_root/sbom-rpms/`
+            //   - every other `*.rpm` is flattened into `install_root/`
+            //   - non-rpm files (dnf's repo cache junk) are removed
+            //
+            // `-mindepth 2` skips files already at the top level (which is
+            // also how we avoid re-hitting the `sbom-rpms/` subdirectory:
+            // once SBOM rpms land there they are exactly at depth 2, so the
+            // subsequent `-name '*.rpm'` flatten pass would sweep them back
+            // into `install_root/`). Prune that subdirectory explicitly on
+            // both the flatten and cleanup passes.
+            //
+            // SBOM-subpackage glob: `<name>-sbom-<version>-<release>.<arch>.rpm`.
+            // Old-twoliter used `*-sbom-*.rpm` (`build.Dockerfile:335`), which
+            // would false-match a hypothetical future package literally named
+            // e.g. `foo-sbom-bar`. Tighten to `*-sbom-[0-9]*.rpm` — the char
+            // after the `sbom-` separator is the first digit of the RPM
+            // Version field, which is a hard rpmbuild constraint (Version
+            // must start with a digit). No legitimate sbom subpackage is
+            // excluded, and no legitimate main package with a `-sbom-`
+            // literal in its stem is included.
+            //
+            // Naming these three under separate `vfs.command` actions keeps
+            // each dnf-cache-partition step legible in the log and lets a
+            // shell error point at a specific stage.
+            let install_root_str: &str = install_root.as_ref();
+            let sbom_rpms_str: &str = sbom_rpms_root.as_ref();
+            vfs.command(
+                "sort_sbom_rpms",
+                "find",
+                &[
+                    install_root_str,
+                    "-mindepth", "2",
+                    "-type", "f",
+                    "-name", "'*-sbom-[0-9]*.rpm'",
+                    "-not", "-path", &format!("'{sbom_rpms_str}/*'"),
+                    "-exec", "mv", "-t", sbom_rpms_str, "{}", "+",
+                ],
+            )
+            .await?;
+            vfs.command(
+                "flatten_rpms",
+                "find",
+                &[
+                    install_root_str,
+                    "-mindepth", "2",
+                    "-type", "f",
+                    "-name", "'*.rpm'",
+                    "-not", "-path", &format!("'{sbom_rpms_str}/*'"),
+                    "-exec", "mv", "-t", install_root_str, "{}", "+",
+                ],
+            )
+            .await?;
+            // Cleanup: after `sort_sbom_rpms` and `flatten_rpms` every RPM
+            // we care about now lives either at `install_root/*.rpm` (main
+            // packages) or `install_root/sbom-rpms/*.rpm` (SBOM subpackages).
+            // Everything else is dnf's per-repo cache scaffolding (metadata
+            // XML, sqlite dbs, empty `packages/` subdirs) which we drop by
+            // removing every top-level entry that is neither `sbom-rpms`
+            // nor a `.rpm` file. Reproduces the intent of
+            // `build.Dockerfile:337`'s `find ... ! -name '*.rpm' -delete`
+            // without accidentally recursing into `sbom-rpms/`.
+            vfs.command(
+                "clean_cache_junk",
+                "find",
+                &[
+                    install_root_str,
+                    "-mindepth", "1",
+                    "-maxdepth", "1",
+                    "!", "-name", "'*.rpm'",
+                    "!", "-name", "'sbom-rpms'",
+                    "-exec", "rm", "-rf", "{}", "+",
+                ],
+            )
+            .await?;
 
             // Now we store the result as a single tarball containing the filtered packages for this variant
             let writer = ctx.storage().safe_start_layer().await?;
@@ -264,6 +360,7 @@ impl TransformImpl for RepoTransform {
                 .media_type(MediaType::Manifest)
                 .layers(vec![layer])
                 .build();
+            ctx.storage().safe_save(&artifact).await?;
 
             Ok::<Artifact, TransformError>(artifact)
         }

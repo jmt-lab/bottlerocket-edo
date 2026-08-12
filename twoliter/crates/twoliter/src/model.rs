@@ -51,5 +51,5 @@ impl std::fmt::Display for Arch {
 #[derive(Snafu, Debug)]
 pub enum ArchError {
     #[snafu(display("unsupported architecture: {value}"))]
-    Unsupported { value: String }
+    Unsupported { value: String },
 }

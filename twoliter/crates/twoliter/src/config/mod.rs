@@ -409,7 +409,10 @@ impl Config {
             let mut schema = match config {
                 Config::V1(element) => match element {
                     ConfigType::Variant(v) => {
-                        Ok(v.to_edo(namespace, project_kits, project_packages)?)
+                        // `path` is `variants/<name>/`; `to_edo` uses this to
+                        // locate `template.ovf` (old-twoliter convention:
+                        // `Makefile.toml:173`).
+                        Ok(v.to_edo(namespace, path.as_ref(), project_kits, project_packages)?)
                     }
                     ConfigType::Kit(_) => error::ExpectedSnafu {
                         expected: "variant",

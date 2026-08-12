@@ -7,13 +7,14 @@ optionally grant launch permissions.
 ## Usage
 
 ```
-twoliter publish ami <variant>
+twoliter publish ami register <variant>
     [--arch <x86_64|aarch64>]
     [--regions <r1,r2,…>]
     [--visibility public|private]
     [--launch-permissions <path>]
     [--ami-output <path>]
     [--allow-clobber]
+    [--infra-config <path>]
 ```
 
 Also includes:
@@ -21,12 +22,18 @@ Also includes:
 ```
 twoliter publish ami grant <ami-input>   [--user-ids …] [--groups …] [--regions …]
 twoliter publish ami revoke <ami-input>  [--user-ids …] [--groups …] [--regions …]
-twoliter publish ami validate <ami-input> …
-twoliter publish ami public <ami-input>  …
+twoliter publish ami validate <ami-input> [--regions …] [--json]
+twoliter publish ami public <ami-input>  [--regions …]
 ```
 
 Old code has these as separate binaries (`pubsys ami`, `pubsys publish-ami`,
 `pubsys validate-ami`) — new twoliter groups them.
+
+**Note on CLI shape.** An earlier draft of this doc used `twoliter
+publish ami <variant>` (variant as a positional). The implementation
+uses `twoliter publish ami register <variant>` so the four sibling
+sub-subcommands (`grant`, `revoke`, `validate`, `public`) sit at a
+consistent slot.
 
 ## Behavior
 
@@ -76,3 +83,27 @@ Local farm. Talks to `ec2`, `ebs`, `sts` via `aws-sdk-*`.
   update `edo.lock.json` with published AMI IDs? Recommendation: no, keep
   them in a separate `<project>/ami.<variant>.<arch>.json` file. AMIs
   aren't project inputs; they're project outputs.
+
+## Deferred (follow-on work)
+
+- **User-authored `amispec.toml` + handlebars templates.** The old
+  pubsys let operators override any AMI-registration field via a
+  handlebars-templated TOML file (`--amispec-file`). The MVP builds
+  `RegisterImageInput` directly from the parsed `VariantManifest`
+  (`crates/twoliter/src/publish/aws/ami/register/build.rs`). Restoring
+  the template layer requires porting `crates/amispec/`,
+  `crates/serde-templated/`, and `crates/serde-templated-derive/`
+  from `old-twoliter/tools/`.
+- **`Infra.lock` YAML support.** The MVP loads `Infra.toml` only. The
+  lock-file loader ports if / when the lock-file workflow does.
+- **`[repo]`, `[vmware]`, `[ssm.templates]` typed schemas.** Preserved
+  as opaque `toml::Value` today so an existing operator config parses
+  without error; each becomes typed as its subcommand port lands.
+- **UEFI-data source for `image-features.uefi-secure-boot` variants.**
+  The `variant-image` artifact does not currently carry a uefi-data
+  layer, so `register` fails client-side (via a preflight in
+  `register_inputs`) with a clear error pointing at this section.
+  Landing this feature requires either (a) the transform emitting a
+  uefi-data layer with a stable media type that `stage_variant` can
+  discover, or (b) a `--uefi-data <path>` flag on the CLI to feed
+  one from disk.

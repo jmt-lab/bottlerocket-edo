@@ -7,7 +7,7 @@ pub enum ImageFormat {
     Qcow2,
     #[default]
     Raw,
-    Vmdk
+    Vmdk,
 }
 
 impl std::fmt::Display for ImageFormat {
@@ -16,7 +16,7 @@ impl std::fmt::Display for ImageFormat {
             Self::Eif => "eif",
             Self::Qcow2 => "qcow2",
             Self::Raw => "raw",
-            Self::Vmdk => "vmdk"
+            Self::Vmdk => "vmdk",
         })
     }
 }
@@ -29,12 +29,11 @@ pub enum PartitionPlan {
     Unified,
 }
 
-
 impl std::fmt::Display for PartitionPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Split => "split",
-            Self::Unified => "unified"
+            Self::Unified => "unified",
         })
     }
 }

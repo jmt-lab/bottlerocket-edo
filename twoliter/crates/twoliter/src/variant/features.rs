@@ -144,13 +144,25 @@ impl ImageFeatures {
     }
 
     pub fn to_bconds(&self) -> String {
-        let mut out = Vec::new();
+        // `metadata.spec` guards each feature with `%if %{with foo_bar}`,
+        // which requires the bcond identifier to be an rpm macro name
+        // (letters/digits/underscores). `ImageFeature`'s `Display` is
+        // dash-cased for the wire format (`erofs-root-partition`), so
+        // emitting it verbatim produces `%bcond_without erofs-root-partition`,
+        // which rpm silently drops -- the spec then always falls through
+        // to the `%else` branch and provides `no-erofs-root-partition`
+        // even when the variant requested `erofs-root-partition = true`.
+        //
+        // Match old-twoliter (`build.Dockerfile:249-257`) and normalize
+        // to underscores here.
+        let mut out = String::new();
         for feature in ImageFeature::ALL {
             if self.is_enabled(feature.clone()) {
-                out.push(format!("%bcond_without {}", feature));
+                let name = feature.to_string().replace('-', "_");
+                out.push_str(&format!("%bcond_without {}\n", name));
             }
         }
-        out.join("\n")
+        out
     }
 
     pub fn to_args(&self) -> Vec<String> {
@@ -163,7 +175,11 @@ impl ImageFeatures {
                 } else {
                     Some(format!(
                         "{y}={}",
-                        if self.is_enabled(x.clone()) { "yes" } else { "no" }
+                        if self.is_enabled(x.clone()) {
+                            "yes"
+                        } else {
+                            "no"
+                        }
                     ))
                 }
             })

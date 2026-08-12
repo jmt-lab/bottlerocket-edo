@@ -1,10 +1,8 @@
-use crate::{
-    variant::{
-        ImageFeature, ImageFeatures, ImageOptions, PartitionPlan,
-        disk::{
-            constants::*,
-            model::{Bank, Partition, Slot},
-        },
+use crate::variant::{
+    ImageFeature, ImageFeatures, ImageOptions, PartitionPlan,
+    disk::{
+        constants::*,
+        model::{Bank, Partition, Slot},
     },
 };
 use snafu::{OptionExt, ensure};
@@ -98,7 +96,7 @@ impl Layout {
                 (Slot::BootA, boot_mib),
                 (Slot::RootA, root_mib),
                 (Slot::HashA, hash_mib),
-                (Slot::ReservedA, reserved_mib)
+                (Slot::ReservedA, reserved_mib),
             ]);
             let (bank_a, adj_offset) = bank(offset, slots)?;
             offset = adj_offset;
@@ -110,7 +108,7 @@ impl Layout {
                 (Slot::BootB, boot_mib),
                 (Slot::RootB, root_mib),
                 (Slot::HashB, hash_mib),
-                (Slot::ReservedB, reserved_mib)
+                (Slot::ReservedB, reserved_mib),
             ]);
             let (bank_b, adj_offset) = bank(offset, slots)?;
             offset = adj_offset;
@@ -122,7 +120,7 @@ impl Layout {
                 (Slot::BootA, boot_mib * 2),
                 (Slot::RootA, root_mib * 2),
                 (Slot::HashA, hash_mib * 2),
-                (Slot::ReservedA, reserved_mib * 2)
+                (Slot::ReservedA, reserved_mib * 2),
             ]);
 
             let (bank, adj_offset) = bank(offset, slots)?;

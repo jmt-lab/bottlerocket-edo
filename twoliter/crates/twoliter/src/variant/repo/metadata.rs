@@ -5,7 +5,10 @@
 use bon::Builder;
 use edo::environment::{EnvironmentError, Vfs};
 
-use crate::{model::Arch, variant::{ImageFeatures, Variant}};
+use crate::{
+    model::Arch,
+    variant::{DEFAULT_VARIANT_FLAVOR, ImageFeatures, Variant},
+};
 
 const METADATA_SPEC: &str = include_str!("../../../data/metadata.spec");
 
@@ -33,8 +36,18 @@ impl BuildMetadata {
         let _ = build.create_dir("sources").await?;
 
         // (2) SDK provided arch-specific rpm macros
-        self.workdir.copy(format!("/usr/lib/rpm/platform/{}-bottlerocket/macros", self.arch), self.workdir.entry(".rpmmacros").await).await?;
-        self.workdir.copy(format!("/usr/lib/rpm/platform/{}-bottlerocket/macros", self.arch), "/root/.rpmmacros").await?;
+        self.workdir
+            .copy(
+                format!("/usr/lib/rpm/platform/{}-bottlerocket/macros", self.arch),
+                self.workdir.entry(".rpmmacros").await,
+            )
+            .await?;
+        self.workdir
+            .copy(
+                format!("/usr/lib/rpm/platform/{}-bottlerocket/macros", self.arch),
+                "/root/.rpmmacros",
+            )
+            .await?;
 
         // (3) Write the spec and preprend it with `%bcond_*` declarations that
         // encode the image-features set
@@ -45,23 +58,53 @@ impl BuildMetadata {
         specs.write(spec_path.clone(), &spec_bytes).await?;
 
         // (4) rpmbuild the metadata spec
-        self.workdir.command("build_metadata_rpm", "rpmbuild", &[
-            "--bb",
-            "--clean",
-            "--undefine _auto_set_build_flags",
-            &format!("--define \"_topdir {:?}\"", rpmbuild.path()),
-            &format!("--define \"_target_cpu {}\"", self.arch),
-            &format!("--define \"_cross_variant {}\"", self.variant),
-            &format!("--define \"_cross_variant_platform {}\"", self.variant.platform()),
-            &format!("--define \"_cross_variant_runtime {}\"", self.variant.runtime()),
-            &format!("--define \"_cross_variant_family {}\"", self.variant.family()),
-            &format!("--define \"_cross_variant_flavor {}\"", self.variant.variant_flavor().unwrap_or_default()),
-            spec_path.as_ref()
-        ]).await?;
+        self.workdir
+            .command(
+                "build_metadata_rpm",
+                "rpmbuild",
+                &[
+                    "--bb",
+                    "--clean",
+                    "--undefine _auto_set_build_flags",
+                    &format!("--define \"_topdir {:?}\"", rpmbuild.path()),
+                    &format!("--define \"_target_cpu {}\"", self.arch),
+                    &format!("--define \"_cross_variant {}\"", self.variant),
+                    &format!(
+                        "--define \"_cross_variant_platform {}\"",
+                        self.variant.platform()
+                    ),
+                    &format!(
+                        "--define \"_cross_variant_runtime {}\"",
+                        self.variant.runtime()
+                    ),
+                    &format!(
+                        "--define \"_cross_variant_family {}\"",
+                        self.variant.family()
+                    ),
+                    &format!(
+                        "--define \"_cross_variant_flavor {}\"",
+                        self.variant
+                            .variant_flavor()
+                            .unwrap_or(DEFAULT_VARIANT_FLAVOR)
+                    ),
+                    spec_path.as_ref(),
+                ],
+            )
+            .await?;
 
-        // (5) Copy the built RPMS to `output`
-        rpms.copy(format!("{}/*.rpm", self.arch), self.output.clone()).await?;
+        // (5) Copy the built RPMS to `output`.
+        //
+        // We can't use `Vfs::copy` here because it debug-formats both paths
+        // (`cp -r "{from}" "{to}"`), which double-quotes the source and
+        // suppresses shell glob expansion of `*.rpm`. `Vfs::command` joins
+        // args unquoted and hands the whole line to `sh -c` inside the
+        // environment, so the glob expands there.
+        rpms.copy(
+            self.arch.to_string(),
+            self.output.entry("Packages/metadata").await,
+        )
+        .await?;
 
-         Ok(())
+        Ok(())
     }
 }

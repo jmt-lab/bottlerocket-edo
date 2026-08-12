@@ -208,11 +208,19 @@ if [[ "${STANDALONE_IMAGE}" == "no" && "${PARTITION_PLAN}" == "split" ]]; then
 fi
 
 INSTALL_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-rpm -iv --ignorearch --root "${ROOT_MOUNT}" "${PACKAGE_DIR}"/*.rpm
+# Redirect rpm's DB out of `/usr/lib/sysimage/rpm/` (rpm4's default `%_dbpath`
+# in current SDKs) so rpm doesn't pre-create `${ROOT_MOUNT}/usr/...` before
+# unpacking the CPIO payload. Without this, `bottlerocket-filesystem` fails
+# with `cpio: File from package ... already exists as a directory` on `/usr`.
+# Old-twoliter's build.Dockerfile:308 injected the same override globally via
+# `echo '%_dbpath %{_sharedstatedir}/rpm' >> /etc/rpm/macros`; the transform
+# can't mutate SDK state, so we pass `--define` per-invocation instead. See
+# `crates/image/rpm_install.rs::install_rpms` for the matching Rust-side fix.
+rpm -iv --ignorearch --define '_dbpath /var/lib/rpm' --root "${ROOT_MOUNT}" "${PACKAGE_DIR}"/*.rpm
 
 # Embed any declared guest variant images into the host rootfs. Each entry has the form
 # `<guest>:<install_path>:<host_image_dir>` separated by newlines. The host image dir is
-# expressed relative to the project root, which is mounted at /bypass.
+# expressed relative to the project root.
 #
 # For the copy into the rootfs at `<install_path>` we take only the bootable image
 # artifacts (and their stable-name symlinks). Sidecar build outputs -- `application
@@ -233,7 +241,7 @@ GUEST_INVENTORY_FILES=()
 if [ -n "${GUEST_IMAGES}" ]; then
   while IFS=: read -r guest install_path host_dir; do
     [ -z "${guest}" ] && continue
-    src="/bypass/${host_dir}"
+    src="${host_dir}"
     if [ ! -d "${src}" ]; then
       echo "guest-images: source directory '${src}' for guest '${guest}' does not exist" >&2
       exit 1
@@ -297,7 +305,8 @@ mapfile -t sbom_rpms < <(find "${SBOM_PACKAGE_DIR}" -maxdepth 1 -name "*.rpm" -t
 # There will always be a metadata SBOM package
 if [[ ${#sbom_rpms[@]} -gt 1 ]]; then
   mkdir -p "${SBOM_MOUNT}/var/lib/rpm"
-  rpm -iv --ignorearch --root "${SBOM_MOUNT}" "${SBOM_PACKAGE_DIR}"/*.rpm
+  # See `_dbpath` note on the main `rpm -iv` above.
+  rpm -iv --ignorearch --define '_dbpath /var/lib/rpm' --root "${SBOM_MOUNT}" "${SBOM_PACKAGE_DIR}"/*.rpm
   usr_dirs=(${SBOM_MOUNT}/*-linux-gnu/sys-root/usr)
   usr_dir="${usr_dirs[0]}"
   ln -rs "${usr_dir}" "${SBOM_MOUNT}/usr"

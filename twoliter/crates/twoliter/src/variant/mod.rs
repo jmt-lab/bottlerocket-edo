@@ -1,14 +1,14 @@
-mod repo;
-mod options;
-mod image;
-mod features;
-mod variant;
 mod disk;
+mod features;
+mod image;
+mod options;
+mod repo;
 mod rpm2img;
+mod variant;
 
-pub use repo::*;
-pub use options::*;
-pub use variant::Variant;
 pub use features::*;
 pub use image::*;
+pub use options::*;
+pub use repo::*;
 pub use rpm2img::*;
+pub use variant::{DEFAULT_VARIANT_FLAVOR, DEFAULT_VARIANT_VERSION, Variant};

@@ -54,7 +54,9 @@ pub mod error {
         },
         #[snafu(display("no variant located at address {addr}"))]
         NoVariant { addr: edo::context::Addr },
-        #[snafu(display("no variant-image artifact for {name}/{version} (arch={arch}) in storage; run `twoliter build variants/{name}` first"))]
+        #[snafu(display(
+            "no variant-image artifact for {name}/{version} (arch={arch}) in storage; run `twoliter build variants/{name}` first"
+        ))]
         MissingVariantArtifact {
             name: String,
             version: String,

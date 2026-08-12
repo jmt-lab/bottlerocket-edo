@@ -223,9 +223,17 @@ impl Variant {
     /// on a single upstream: the repo element's address. Guest-image
     /// addrs live on `guest-images` and are staged into the image's
     /// `images/` scratch dir at build time.
+    /// `variant_dir` is the on-disk path to `variants/<name>/` — used
+    /// solely to locate a sibling `template.ovf`, following old-twoliter's
+    /// convention at `Makefile.toml:173`
+    /// (`${BUILDSYS_ROOT_DIR}/variants/${BUILDSYS_VARIANT}/template.ovf`).
+    /// The path is threaded through to `RPM2ImageTransform` unconditionally
+    /// even when no template exists on disk; consumers only fault it in
+    /// for VMDK builds (see `imghelper.sh::sanity_checks`).
     pub fn to_edo(
         &self,
         namespace: &Addr,
+        variant_dir: &std::path::Path,
         kits: &[Addr],
         project_packages: &BTreeMap<String, Vec<String>>,
     ) -> ContextResult<Schema> {
@@ -266,8 +274,7 @@ impl Variant {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Guest images: each entry's `addr` verbatim.
-        let guest_images: Vec<Addr> =
-            self.guest_image.iter().map(|g| g.addr.clone()).collect();
+        let guest_images: Vec<Addr> = self.guest_image.iter().map(|g| g.addr.clone()).collect();
 
         let mut transforms = BTreeMap::new();
 
@@ -279,11 +286,12 @@ impl Variant {
         // Guest-images and image sizing/format live on the repo
         // element too because `VariantOptions` is shared; only the
         // image stage consults them.
-        let repo_config = self.variant_options_config(
-            &package_deps,
-            &guest_images,
-            &os_packages,
-        );
+        // Old-twoliter convention: `variants/<name>/template.ovf`. Emit
+        // unconditionally; whether the file exists on disk is only checked
+        // when `image.format = "vmdk"` by the downstream shell script.
+        let template_ovf: std::path::PathBuf = variant_dir.join("template.ovf");
+        let repo_config =
+            self.variant_options_config(&package_deps, &guest_images, &os_packages, &template_ovf);
         let mut repo_scopes: BTreeMap<String, Vec<Addr>> =
             BTreeMap::from([("default".to_string(), vec![sdk_addr.clone()])]);
         if !kits.is_empty() {
@@ -305,20 +313,41 @@ impl Variant {
         // element's address. Guest-image addrs stay on `guest-images`
         // for the image stage to iterate at build time.
         // `os.packages` is emptied — the image stage doesn't run dnf.
+        //
+        // Kits are also attached under a `"kits"` source scope — parallel
+        // to the repo element — so the image transform can stage them
+        // under `kits/<vendor>/<name>/<arch>/` and pass
+        // `--external-kits-path=` to `rpm2img.sh`. The script's
+        // `generate_application_inventory` helper reads each kit's
+        // `repodata/` to rewrite `bottlerocket-`-prefixed package names
+        // to their kit-native names and set the `Publisher` field to
+        // the kit's vendor (see `imghelper.sh::generate_application_inventory`
+        // and the `EXTERNAL_KIT_METADATA_PATH` block).
         let image_config = self.variant_options_config(
             &[repo_addr.clone()],
             &guest_images,
             &[],
+            &template_ovf,
         );
-        transforms.insert(
-            variant_addr.clone(),
+        let image_element = if kits.is_empty() {
             Element::builder()
                 .addr(variant_addr.clone())
                 .kind("variant-image")
                 .environment(sdk_env.clone())
                 .config(image_config)
-                .build(),
-        );
+                .build()
+        } else {
+            let image_scopes: BTreeMap<String, Vec<Addr>> =
+                BTreeMap::from([("kits".to_string(), kits.to_vec())]);
+            Element::builder()
+                .addr(variant_addr.clone())
+                .kind("variant-image")
+                .environment(sdk_env.clone())
+                .source(SourceMap::Unresolved(image_scopes))
+                .config(image_config)
+                .build()
+        };
+        transforms.insert(variant_addr.clone(), image_element);
 
         Ok(Schema::builder().transform(transforms).build())
     }
@@ -342,6 +371,7 @@ impl Variant {
         depends: &[Addr],
         guest_images: &[Addr],
         os_packages: &[String],
+        template_ovf: &std::path::Path,
     ) -> BTreeMap<String, Value> {
         let mut cfg = BTreeMap::new();
         cfg.insert("name".to_string(), json!(&self.name));
@@ -362,7 +392,7 @@ impl Variant {
                     .collect::<Vec<_>>()
             ),
         );
-        cfg.insert("image".to_string(), self.image_options());
+        cfg.insert("image".to_string(), self.image_options(template_ovf));
         cfg.insert("os".to_string(), self.os_options(os_packages));
         cfg
     }
@@ -374,7 +404,7 @@ impl Variant {
     /// build — tests using the emitter without them will simply emit
     /// a partial block that fails downstream deserialization if
     /// consumed by the transform).
-    fn image_options(&self) -> Value {
+    fn image_options(&self, template_ovf: &std::path::Path) -> Value {
         let mut image = serde_json::Map::new();
         if let Some(fmt) = &self.image.format {
             image.insert("format".to_string(), json!(fmt.to_string()));
@@ -388,6 +418,11 @@ impl Variant {
         if let Some(size) = self.image.data_image_size_gib {
             image.insert("data-size".to_string(), json!(size));
         }
+        // On-host path to the OVF template. Emitted unconditionally
+        // (mirrors `build.Dockerfile:442`); the transform side only
+        // stages the file if it actually exists, and only VMDK builds
+        // ever read its contents.
+        image.insert("ovf-template".to_string(), json!(template_ovf));
         // `ImageFeatures` deserializes from `BTreeMap<ImageFeature, bool>`;
         // we always emit the (possibly empty) table so the transform
         // side gets a definite value rather than falling back to
@@ -533,12 +568,12 @@ partition-plan = "split"
         let schema = v
             .to_edo(
                 &namespace,
+                std::path::Path::new("."),
                 &kits(&["//kits/bottlerocket/core-kit"]),
                 &pkgs(&[]),
             )
             .expect("to_edo");
-        let addrs: BTreeSet<String> =
-            schema.transforms().keys().map(|a| a.to_string()).collect();
+        let addrs: BTreeSet<String> = schema.transforms().keys().map(|a| a.to_string()).collect();
         assert_eq!(
             addrs,
             BTreeSet::from([
@@ -558,7 +593,7 @@ version = "0.1.0"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let by_kind: BTreeMap<String, String> = schema
             .transforms()
@@ -583,7 +618,7 @@ version = "0.1.0"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let image = schema
             .transforms()
@@ -609,6 +644,7 @@ packages = ["pkg-e"]
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &kits(&["//kits/bottlerocket/core-kit"]),
                 &pkgs(&["pkg-e"]),
             )
@@ -668,6 +704,7 @@ packages = ["release", "kernel-6.18"]
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &kits(&["//kits/bottlerocket/core-kit"]),
                 &pkgs(&[]),
             )
@@ -709,6 +746,7 @@ packages = ["settings-defaults"]
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &[],
                 &pkgs(&["settings-defaults"]),
             )
@@ -750,6 +788,7 @@ packages = ["release"]
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &[],
                 &pkgs_with_deps(&[
                     ("release", &["os"]),
@@ -811,7 +850,7 @@ version = "0.1.0"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let repo = schema
             .transforms()
@@ -839,6 +878,7 @@ version = "0.1.0"
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &project_kits,
                 &pkgs(&[]),
             )
@@ -866,13 +906,55 @@ version = "0.1.0"
             ]
         );
 
-        // Image stage carries no source scopes.
+        // The image stage also carries the `kits` scope so
+        // `RPM2ImageTransform` can stage each kit into
+        // `kits/<vendor>/<name>/<arch>/` and pass
+        // `--external-kits-path=` to `rpm2img.sh` for the
+        // application-inventory rewrite. Kit ordering matches the
+        // repo stage (both derive from the same caller slice), and
+        // no `default` scope is emitted here because the image stage
+        // does not consume the SDK source directly.
+        let image_elem = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        let image_scopes = unresolved_scopes(image_elem);
+        let image_kits_scope = image_scopes.get("kits").expect("image kits scope present");
+        let image_kit_addrs: Vec<String> =
+            image_kits_scope.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            image_kit_addrs,
+            vec![
+                "//kits/bottlerocket/core-kit".to_string(),
+                "//kits/my-vendor/extra-3-kit".to_string(),
+            ]
+        );
+        assert!(!image_scopes.contains_key("default"));
+    }
+
+    /// Empty project-kit slice must not emit an empty `"kits"` scope on
+    /// the image element either (parity with the repo element).
+    #[test]
+    fn no_kit_scope_emitted_on_image_when_project_has_no_kits() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
+                &[],
+                &pkgs(&[]),
+            )
+            .unwrap();
         let image_elem = schema
             .transforms()
             .get(&Addr::parse("//variants/x").unwrap())
             .unwrap();
         assert!(!unresolved_scopes(image_elem).contains_key("kits"));
-        assert!(!unresolved_scopes(image_elem).contains_key("default"));
     }
 
     /// Regression guard: an empty project-kit slice must not emit an
@@ -886,7 +968,7 @@ version = "0.1.0"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let repo = schema
             .transforms()
@@ -912,7 +994,7 @@ kernel-parameters = ["quiet", "console=ttyS0"]
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         for stage_addr in ["//variants/x/repo", "//variants/x"] {
             let elem = schema
@@ -940,22 +1022,17 @@ version = "0.1.0"
 
 [image.features]
 uefi-secure-boot = true
-first-party-stack = true
+standalone-image = true
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let image = schema
             .transforms()
             .get(&Addr::parse("//variants/x").unwrap())
             .unwrap();
-        let features = image
-            .config
-            .get("image")
-            .unwrap()
-            .get("features")
-            .unwrap();
+        let features = image.config.get("image").unwrap().get("features").unwrap();
         assert_eq!(
             features.get("uefi-secure-boot").and_then(|v| v.as_bool()),
             Some(true)
@@ -975,7 +1052,7 @@ version = "0.1.0"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         let finalizer_addr = Addr::parse("//variants/aws-k8s-1.29").unwrap();
         let elem = schema
@@ -1005,6 +1082,7 @@ version = "0.1.0"
         let schema = v
             .to_edo(
                 &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
                 &project_kits,
                 &pkgs(&[]),
             )
@@ -1063,7 +1141,7 @@ format = "{fmt}"
             );
             let v = parse(&toml);
             let schema = v
-                .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+                .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
                 .unwrap();
             let repo = schema
                 .transforms()
@@ -1118,7 +1196,7 @@ addr = "//guest-images/firecracker"
 "#,
         );
         let schema = v
-            .to_edo(&Addr::parse("//variants").unwrap(), &[], &pkgs(&[]))
+            .to_edo(&Addr::parse("//variants").unwrap(), std::path::Path::new("."), &[], &pkgs(&[]))
             .unwrap();
         for stage_addr in ["//variants/x/repo", "//variants/x"] {
             let elem = schema
