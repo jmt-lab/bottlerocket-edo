@@ -1,0 +1,747 @@
+#!/usr/bin/env bash
+
+set -eu -o pipefail
+shopt -qs failglob
+
+OUTPUT_FMT="raw"
+OVF_TEMPLATE=""
+
+XFS_DATA_PARTITION="no"
+EROFS_ROOT_PARTITION="no"
+UEFI_SECURE_BOOT="no"
+IN_PLACE_UPDATES="no"
+ENCRYPTED_STORAGE="no"
+STANDALONE_IMAGE="no"
+GUEST_IMAGES=""
+
+for opt in "$@"; do
+  optarg="${opt#*=}"
+  case "${opt}" in
+  --package-dir=*) PACKAGE_DIR="${optarg}" ;;
+  --output-dir=*) OUTPUT_DIR="${optarg}" ;;
+  --output-fmt=*) OUTPUT_FMT="${optarg}" ;;
+  --external-kits-path=*) EXTERNAL_KITS_PATH="${optarg}" ;;
+  --os-image-size-gib=*) OS_IMAGE_SIZE_GIB="${optarg}" ;;
+  --data-image-size-gib=*) DATA_IMAGE_SIZE_GIB="${optarg}" ;;
+  --os-image-publish-size-gib=*) OS_IMAGE_PUBLISH_SIZE_GIB="${optarg}" ;;
+  --data-image-publish-size-gib=*) DATA_IMAGE_PUBLISH_SIZE_GIB="${optarg}" ;;
+  --partition-plan=*) PARTITION_PLAN="${optarg}" ;;
+  --ovf-template=*) OVF_TEMPLATE="${optarg}" ;;
+  --with-xfs-data-partition=*) XFS_DATA_PARTITION="${optarg}" ;;
+  --with-erofs-root-partition=*) EROFS_ROOT_PARTITION="${optarg}" ;;
+  --with-uefi-secure-boot=*) UEFI_SECURE_BOOT="${optarg}" ;;
+  --with-in-place-updates=*) IN_PLACE_UPDATES="${optarg}" ;;
+  --with-encrypted-storage=*) ENCRYPTED_STORAGE="${optarg}" ;;
+  --with-standalone-image=*) STANDALONE_IMAGE="${optarg}" ;;
+  --guest-images=*) GUEST_IMAGES="${optarg}" ;;
+  --sbom-package-dir=*) SBOM_PACKAGE_DIR="${optarg}" ;;
+  *)
+    echo "unexpected arg: ${opt}" >&2
+    exit 1
+    ;;
+  esac
+done
+
+# Import the partition helper functions.
+# shellcheck source=partyplanner
+. "${0%/*}/partyplanner"
+
+# Import the image helper functions.
+# shellcheck source=imghelper
+. "${0%/*}/imghelper"
+
+# Import the guest-images copy helper.
+# shellcheck source=guest-images-helper
+. "${0%/*}/guest-images-helper"
+
+sanity_checks \
+  "${OUTPUT_FMT}" "${PARTITION_PLAN}" "${OVF_TEMPLATE}" "${UEFI_SECURE_BOOT}" "${SBOM_PACKAGE_DIR}"
+
+# Re-validate flag combinations: img2img/rpm2img can be invoked directly via
+# repack-variant, so we cannot rely on buildsys to have already enforced these.
+# Keep this list in sync with `img2img` and with `validate_image_features` in
+# `tools/buildsys/src/manifest.rs`.
+if [[ "${STANDALONE_IMAGE}" == "yes" ]]; then
+  declare -A standalone_image_conflicts=(
+    [UEFI_SECURE_BOOT]="uefi-secure-boot"
+    [IN_PLACE_UPDATES]="in-place-updates"
+    [ENCRYPTED_STORAGE]="encrypted-storage"
+  )
+  for f in "${!standalone_image_conflicts[@]}"; do
+    if [[ "${!f}" == "yes" ]]; then
+      echo "\`standalone-image = true\` is incompatible with '${standalone_image_conflicts[${f}]}'" >&2
+      exit 1
+    fi
+  done
+  if [[ "${PARTITION_PLAN}" == "split" ]]; then
+    echo "\`standalone-image = true\` is incompatible with 'partition-plan=split'" >&2
+    exit 1
+  fi
+fi
+
+# Store output artifacts in a versioned directory.
+OUTPUT_DIR="${OUTPUT_DIR}/${VERSION_ID}-${BUILD_ID}"
+mkdir -p "${OUTPUT_DIR}"
+
+# Clean up working directories to reduce size of layer.
+cleanup() {
+  rm -rf /tmp/*
+}
+trap 'cleanup' EXIT
+
+OS_IMAGE="$(mktemp)"
+BOOT_IMAGE="$(mktemp)"
+VERITY_IMAGE="$(mktemp)"
+ROOT_IMAGE="$(mktemp)"
+DATA_IMAGE="$(mktemp)"
+EFI_IMAGE="$(mktemp)"
+PRIVATE_IMAGE="$(mktemp)"
+BOTTLEROCKET_DATA="$(mktemp)"
+
+ROOT_MOUNT="$(mktemp -d)"
+BOOT_MOUNT="$(mktemp -d)"
+DATA_MOUNT="$(mktemp -d)"
+EFI_MOUNT="$(mktemp -d)"
+PRIVATE_MOUNT="$(mktemp -d)"
+
+SELINUX_ROOT="/etc/selinux"
+SELINUX_POLICY="fortified"
+SELINUX_FILE_CONTEXTS="${ROOT_MOUNT}/${SELINUX_ROOT}/${SELINUX_POLICY}/contexts/files/file_contexts"
+
+BOOTCONFIG_DIR="$(mktemp -d)"
+BOOTCONFIG_INPUT="${BOOTCONFIG_DIR}/bootconfig.in"
+
+# Bottlerocket has been experimentally shown to boot faster on EBS volumes when
+# striping the root filesystem into 4MiB stripes. We use 4kb ext4 blocks. The
+# stride and stripe should both be $STRIPE_SIZE / $EXT4_BLOCK_SIZE
+ROOT_STRIDE=1024
+ROOT_STRIPE_WIDTH=1024
+
+case "${PARTITION_PLAN}" in
+split)
+  truncate -s "${OS_IMAGE_SIZE_GIB}G" "${OS_IMAGE}"
+  truncate -s "${DATA_IMAGE_SIZE_GIB}G" "${DATA_IMAGE}"
+  ;;
+unified)
+  # The caller is responsible for resolving any feature-dependent default
+  # for OS_IMAGE_SIZE_GIB (e.g., 1 GiB when `standalone-image = true`)
+  # before invoking
+  # this script; we use the value as-is. See `resolved_image_layout` in
+  # `tools/buildsys/src/manifest.rs` for the canonical resolver.
+  if [[ "${STANDALONE_IMAGE}" == "yes" ]]; then
+    # Stripped-down images do not have a DATA partition, so do not pad the
+    # OS image with the would-be data image space.
+    truncate -s "${OS_IMAGE_SIZE_GIB}G" "${OS_IMAGE}"
+  else
+    truncate -s "$((OS_IMAGE_SIZE_GIB + DATA_IMAGE_SIZE_GIB))G" "${OS_IMAGE}"
+  fi
+  ;;
+*)
+  echo "unexpected partition plan '${PARTITION_PLAN}'" >&2
+  exit 1
+  ;;
+esac
+
+declare -A partlabel parttype partguid partsize partoff
+set_partition_sizes \
+  "${OS_IMAGE_SIZE_GIB}" "${DATA_IMAGE_SIZE_GIB}" \
+  "${PARTITION_PLAN}" "${IN_PLACE_UPDATES}" \
+  partsize partoff "${STANDALONE_IMAGE}"
+set_partition_labels partlabel
+set_partition_types parttype
+set_partition_uuids partguid "${PARTITION_PLAN}"
+
+declare -a partitions
+partitions=(BIOS)
+partitions+=(EFI-A BOOT-A ROOT-A HASH-A)
+if [[ "${STANDALONE_IMAGE}" == "no" ]]; then
+  partitions+=(RESERVED-A)
+  if [[ "${IN_PLACE_UPDATES}" == "yes" ]]; then
+    partitions+=(EFI-B BOOT-B ROOT-B HASH-B RESERVED-B)
+  fi
+  partitions+=(PRIVATE DATA-A DATA-B)
+fi
+
+declare -a partargs
+for part in "${partitions[@]}"; do
+  # We create the DATA-B partition separately if we're using the split layout
+  if [[ "${part}" == "DATA-B" ]]; then
+    continue
+  fi
+
+  # Each partition is aligned to a 1 MiB boundary, and extends to the sector
+  # before the next partition starts. Specify the end point in sectors so we
+  # can subtract a sector to fix the off-by-one error that comes from adding
+  # start and size together. (1 MiB contains 2048 512-byte sectors.)
+  part_start="${partoff[${part}]}"
+  part_end="$((part_start + partsize[${part}]))"
+  part_end="$((part_end * 2048 - 1))"
+
+  partargs+=(-n "0:${part_start}M:${part_end}")
+  partargs+=(-c "0:${partlabel[${part}]}")
+  partargs+=(-t "0:${parttype[${part}]}")
+  partargs+=(-u "0:${partguid[${part}]:-R}")
+
+  # Boot partition attributes:
+  #  48 = gptprio priority bit
+  #  56 = gptprio successful bit
+  case "${part}" in
+  BOOT-A) partargs+=(-A 0:"set":48 -A 0:"set":56) ;;
+  BOOT-B) partargs+=(-A 0:"clear":48 -A 0:"clear":56) ;;
+  *) continue ;;
+  esac
+done
+
+sgdisk --clear "${partargs[@]}" --sort --print "${OS_IMAGE}"
+
+# Partition the separate data disk, if we're using the split layout.
+if [[ "${STANDALONE_IMAGE}" == "no" && "${PARTITION_PLAN}" == "split" ]]; then
+  data_start="${partoff["DATA-B"]}"
+  data_end=$((data_start + partsize["DATA-A"]))
+  data_end=$((data_end * 2048 - 1))
+  sgdisk --clear \
+    -n "0:${data_start}M:${data_end}" \
+    -c "0:${partlabel["DATA-B"]}" \
+    -t "0:${parttype["DATA-B"]}" \
+    -u "0:${partguid["DATA-B"]}" \
+    --sort --print "${DATA_IMAGE}"
+fi
+
+INSTALL_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rpm -iv --ignorearch --root "${ROOT_MOUNT}" "${PACKAGE_DIR}"/*.rpm
+
+# Embed any declared guest variant images into the host rootfs. Each entry has the form
+# `<guest>:<install_path>:<host_image_dir>` separated by newlines. The host image dir is
+# expressed relative to the project root, which is mounted at /bypass.
+#
+# For the copy into the rootfs at `<install_path>` we take only the bootable image
+# artifacts (and their stable-name symlinks). Sidecar build outputs -- `application
+# -inventory.json`, `artifact-metadata.json`, `pcr-predictions.json`, and the
+# `*-sbom-*.json` files -- are intentionally *not* copied into the guest install
+# directory: their contents describe the guest build, and downstream tools discover them
+# via well-known paths under `/usr/share/bottlerocket/`, not under the guest install
+# directory. The bootable-artifact filter lives in `guest-images-helper` (sourced above)
+# so that it can be unit-tested in isolation.
+#
+# The guest's SBOMs and application inventory are, however, treated as first-class inputs
+# to the *host*'s equivalents: the host's SBOM and inventory should record everything that
+# ships as part of the host image, and any embedded guest is effectively another component
+# of the host. We remember each guest's image dir here and merge its SBOM files into the
+# host SBOM (and its application-inventory into the host's) further down.
+GUEST_SBOM_DIRS=()
+GUEST_INVENTORY_FILES=()
+if [ -n "${GUEST_IMAGES}" ]; then
+  while IFS=: read -r guest install_path host_dir; do
+    [ -z "${guest}" ] && continue
+    src="/bypass/${host_dir}"
+    if [ ! -d "${src}" ]; then
+      echo "guest-images: source directory '${src}' for guest '${guest}' does not exist" >&2
+      exit 1
+    fi
+    dst="${ROOT_MOUNT}${install_path}"
+    mkdir -p "${dst}"
+    if ! copy_guest_image_artifacts "${src}" "${dst}"; then
+      echo "guest-images: no image artifacts found for guest '${guest}' under '${src}'" >&2
+      exit 1
+    fi
+    GUEST_SBOM_DIRS+=("${src}")
+    guest_inventory="${src}/application-inventory.json"
+    if [[ -f "${guest_inventory}" ]]; then
+      GUEST_INVENTORY_FILES+=("${guest_inventory}")
+    else
+      echo "guest-images: expected application-inventory '${guest_inventory}' for embedded guest not found" >&2
+      exit 1
+    fi
+  done <<< "${GUEST_IMAGES}"
+fi
+
+# Inventory installed packages. The heavy lifting lives in imghelper so that
+# rpm2img and rpm2eif emit identical inventory payloads.
+generate_application_inventory \
+  "${ROOT_MOUNT}" \
+  "${PACKAGE_DIR}" \
+  "${EXTERNAL_KITS_PATH}" \
+  "${ARCH}" \
+  "${OUTPUT_DIR}" \
+  "${INSTALL_TIME}"
+
+# Merge each embedded guest variant's application-inventory into the host's, so the host
+# image inventory reflects every component that ships in the resulting rootfs. We fold
+# the guest entries into the host `.Content` array, dedupe on the full package identity
+# (Name + Version + Release + Epoch + Architecture) so that two builds of the *same*
+# package version collapse to one entry, but two *different* versions of the same
+# package -- e.g. `foo-1.0` in the host and `foo-1.1` in an embedded guest -- both
+# survive and remain visible to downstream patch/CVE tooling. We rewrite both the
+# in-rootfs and the side-car copies that `generate_application_inventory` produced.
+if [[ ${#GUEST_INVENTORY_FILES[@]} -gt 0 ]]; then
+  HOST_INVENTORY="${ROOT_MOUNT}/usr/share/bottlerocket/application-inventory.json"
+  MERGED_INVENTORY="$(jq --slurp '
+    { "Content": (
+        map(.Content)
+        | add
+        | unique_by([.Name, .Version, .Release, .Epoch, .Architecture])
+        | sort_by([.Name, .Version, .Release, .Epoch, .Architecture])
+      )
+    }
+  ' "${HOST_INVENTORY}" "${GUEST_INVENTORY_FILES[@]}")"
+  printf "%s\n" "${MERGED_INVENTORY}" >"${HOST_INVENTORY}"
+  printf "%s\n" "${MERGED_INVENTORY}" >"${OUTPUT_DIR}/application-inventory.json"
+fi
+
+# Install SBOM packages
+SBOM_MOUNT=$(mktemp -d)
+
+# TODO: Eventually this needs to trigger an error also, but it might be too soon to break backwards compatibility.
+mapfile -t sbom_rpms < <(find "${SBOM_PACKAGE_DIR}" -maxdepth 1 -name "*.rpm" -type f)
+
+# There will always be a metadata SBOM package
+if [[ ${#sbom_rpms[@]} -gt 1 ]]; then
+  mkdir -p "${SBOM_MOUNT}/var/lib/rpm"
+  rpm -iv --ignorearch --root "${SBOM_MOUNT}" "${SBOM_PACKAGE_DIR}"/*.rpm
+  usr_dirs=(${SBOM_MOUNT}/*-linux-gnu/sys-root/usr)
+  usr_dir="${usr_dirs[0]}"
+  ln -rs "${usr_dir}" "${SBOM_MOUNT}/usr"
+fi
+
+# Generate SBOM for variant RPMs
+RPM_SBOM_DIR=$(mktemp -d)
+sbomtool generate --name variant-rpms --build-dir "${PACKAGE_DIR}" --out-dir "${RPM_SBOM_DIR}" --spdx --cyclonedx
+
+# Merge SBOMs into a single json file
+KIT_SBOMS_DIR="${SBOM_MOUNT}/usr/share/sboms"
+IMAGE_SBOM_DIR="${ROOT_MOUNT}/usr/share/bottlerocket"
+mkdir -p "${IMAGE_SBOM_DIR}"
+for format in "spdx" "cyclonedx"; do
+  image_sbom="${format}-sbom.json"
+  image_sbom_path="${IMAGE_SBOM_DIR}/${image_sbom}"
+  rpm_sbom="${RPM_SBOM_DIR}/variant-rpms-${format}.json"
+
+  # Collect guest SBOMs (one per guest, in this format) so the host SBOM records the
+  # embedded guest images as components of the host.
+  guest_sboms=()
+  for guest_dir in "${GUEST_SBOM_DIRS[@]}"; do
+    guest_sbom="${guest_dir}/${format}-sbom.json"
+    if [[ -f "${guest_sbom}" ]]; then
+      guest_sboms+=("${guest_sbom}")
+    else
+      echo "guest-images: expected SBOM '${guest_sbom}' for embedded guest not found" >&2
+      exit 1
+    fi
+  done
+
+  if [ -d "${KIT_SBOMS_DIR}" ]; then
+    # Merge RPM SBOM + kit SBOMs (+ any guest SBOMs) into the image SBOM.
+    find "${KIT_SBOMS_DIR}" -name "*-${format}.json" -type f -exec \
+      sbomtool merge --output "${image_sbom_path}" "${rpm_sbom}" "${guest_sboms[@]}" {} \+
+  elif [[ ${#guest_sboms[@]} -gt 0 ]]; then
+    # No kits, but embedded guests contribute additional components; still need a merge.
+    sbomtool merge --output "${image_sbom_path}" "${rpm_sbom}" "${guest_sboms[@]}"
+  else
+    cp "${rpm_sbom}" "${image_sbom_path}"
+  fi
+  if [[ ! -f "${image_sbom_path}" ]]; then
+    echo "Could not find image SBOM path: ${image_sbom_path}" >&2
+    exit 1
+  fi
+  cp "${image_sbom_path}" "${OUTPUT_DIR}/${image_sbom}"
+  if [[ "${EROFS_ROOT_PARTITION}" == "no" ]]; then
+    lz4 -z -f "${image_sbom_path}" "${image_sbom_path}.lz4"
+    rm "${image_sbom_path}"
+  fi
+done
+
+# Regenerate module dependencies, if possible.
+KMOD_DIR="${ROOT_MOUNT}/lib/modules"
+# First decompress the kernel modules, so they can be recompressed by EROFS.
+if [[ "${EROFS_ROOT_PARTITION}" == "yes" ]]; then
+  find "${KMOD_DIR}" -name '*.ko.gz' -exec gunzip '{}' \;
+  find "${KMOD_DIR}" -name '*.ko.xz' -exec unxz '{}' \;
+  find "${KMOD_DIR}" -name '*.ko.zst' -exec unzstd --rm '{}' \;
+fi
+
+# shellcheck disable=SC2066
+# Quotes are fine here because we only expect one directory to be found.
+for kver in "$(find "${KMOD_DIR}" -mindepth 1 -maxdepth 1 -type d -printf '%P\n')"; do
+  system_map="${KMOD_DIR}/${kver}/System.map"
+  [[ -s "${system_map}" ]] || continue
+  depmod_out="$(mktemp)"
+  depmod -a -e -b "${ROOT_MOUNT}" -F "${system_map}" "${kver}" >"${depmod_out}" 2>&1
+  if grep -E '(WARNING|ERROR|FATAL)' "${depmod_out}"; then
+    echo "Failed to run depmod" >&2
+    exit 1
+  fi
+  rm -f "${system_map}"
+done
+
+# Install CA bundle.
+install_ca_certs "${ROOT_MOUNT}"
+
+# Install 'root.json'.
+install_root_json "${ROOT_MOUNT}"
+
+# "Install" licenses by compressing them into a squashfs, then removing the
+# original files. Skip this step if using erofs, since they will be compressed
+# when the filesystem is created.
+if [[ "${EROFS_ROOT_PARTITION}" == "no" ]]; then
+  mksquashfs \
+    "${ROOT_MOUNT}"/usr/share/licenses \
+    "${ROOT_MOUNT}"/usr/share/bottlerocket/licenses.squashfs \
+    -no-exports -all-root -comp zstd
+  rm -rf "${ROOT_MOUNT}"/usr/share/licenses/*
+fi
+
+# Clean up rpmdb.
+rm -rf "${ROOT_MOUNT}"/var/lib
+
+if [[ "${ARCH}" == "x86_64" ]]; then
+  # MBR and BIOS-BOOT
+  echo "(hd0) ${OS_IMAGE}" >"${ROOT_MOUNT}/boot/grub/device.map"
+  grub-bios-setup \
+    --directory="${ROOT_MOUNT}/boot/grub" \
+    --device-map="${ROOT_MOUNT}/boot/grub/device.map" \
+    --root="hd0" \
+    --skip-fs-probe \
+    "${OS_IMAGE}"
+
+  rm -vf "${ROOT_MOUNT}"/boot/grub/*
+fi
+
+# We also need an EFI partition, formatted FAT32 with the
+# EFI binary at the correct path, e.g. /efi/boot. The grub
+# package has placed the image in /boot/efi/EFI/BOOT.
+mv "${ROOT_MOUNT}/boot/efi"/* "${EFI_MOUNT}"
+
+pushd "${EFI_MOUNT}/EFI/BOOT" >/dev/null
+shims=(boot*.efi)
+shim="${shims[0]}"
+grubs=(grub*.efi)
+grub="${grubs[0]}"
+mokms=(mm*.efi)
+mokm="${mokms[0]}"
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  # Do the setup required for `pesign` and `gpg` signing and
+  # verification to "just work", regardless of which type of
+  # signing profile we have.
+  sbsetup_signing_profile
+
+  sign_shim "${shim}"
+  sign_mokm "${mokm}"
+  sign_grub "${grub}"
+else
+  zero_shim "${shim}"
+  unembed_grub "${grub}"
+fi
+popd >/dev/null
+
+dd if=/dev/zero of="${EFI_IMAGE}" bs=1M count="${partsize["EFI-A"]}"
+mkfs.vfat -I -S 512 "${EFI_IMAGE}" $((partsize["EFI-A"] * 1024))
+mmd -i "${EFI_IMAGE}" ::/EFI
+mmd -i "${EFI_IMAGE}" ::/EFI/BOOT
+mcopy -i "${EFI_IMAGE}" "${EFI_MOUNT}/EFI/BOOT"/*.efi ::/EFI/BOOT
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  # Make the signing certificate available on the EFI system partition so it
+  # can be imported through the firmware setup UI on bare metal systems.
+  provide_certs "${EFI_IMAGE}"
+fi
+dd if="${EFI_IMAGE}" of="${OS_IMAGE}" conv=notrunc bs=1M seek="${partoff["EFI-A"]}"
+
+# Ensure that the grub directory exists.
+mkdir -p "${ROOT_MOUNT}/boot/grub"
+
+# Now that we're done messing with /, move /boot out of it
+mv "${ROOT_MOUNT}/boot"/* "${BOOT_MOUNT}"
+
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  sign_vmlinuz "${BOOT_MOUNT}/vmlinuz"
+fi
+
+# Generate an HMAC for the kernel after signing.
+generate_hmac "${BOOT_MOUNT}/vmlinuz"
+
+# Set the Bottlerocket variant, version, and build-id
+SYS_ROOT="${ARCH}-bottlerocket-linux-gnu/sys-root"
+VERSION="${VERSION_ID} (${VARIANT})"
+
+# shellcheck disable=SC2154 # Some variables are defined by the environment.
+cat <<EOF >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/lib/os-release"
+VERSION="${VERSION}"
+PRETTY_NAME="${PRETTY_NAME} ${VERSION}"
+VARIANT_ID=${VARIANT}
+VERSION_ID=${VERSION_ID}
+BUILD_ID=${BUILD_ID}
+VENDOR_NAME="${PROJECT_VENDOR}"
+HOME_URL="https://github.com/bottlerocket-os/bottlerocket"
+SUPPORT_URL="https://github.com/bottlerocket-os/bottlerocket/discussions"
+BUG_REPORT_URL="https://github.com/bottlerocket-os/bottlerocket/issues"
+DOCUMENTATION_URL="https://bottlerocket.dev"
+EOF
+
+# Set the BOTTLEROCKET-DATA Filesystem for creating/mounting. This is
+# written unconditionally so that `prepare-local-fs.service` can format an
+# attached data volume with `systemd-makefs` even for stripped-down images
+# (`standalone-image = true`) that don't bake in a DATA partition.
+if [[ "${XFS_DATA_PARTITION}" == "yes" ]]; then
+  printf "%s\n" "DATA_PARTITION_FILESYSTEM=xfs" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+else
+  printf "%s\n" "DATA_PARTITION_FILESYSTEM=ext4" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+fi
+
+# Set in-place updates flag
+if [[ "${IN_PLACE_UPDATES}" == "yes" ]]; then
+  printf "%s\n" "IN_PLACE_UPDATES=true" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+else
+  printf "%s\n" "IN_PLACE_UPDATES=false" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+fi
+
+# Set encrypted storage flag
+if [[ "${ENCRYPTED_STORAGE}" == "yes" ]]; then
+  printf "%s\n" "ENCRYPTED_STORAGE=true" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+else
+  printf "%s\n" "ENCRYPTED_STORAGE=false" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+fi
+
+# Set standalone-image flag
+if [[ "${STANDALONE_IMAGE}" == "yes" ]]; then
+  printf "%s\n" "STANDALONE_IMAGE=true" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+else
+  printf "%s\n" "STANDALONE_IMAGE=false" >>"${ROOT_MOUNT}/${SYS_ROOT}/usr/share/bottlerocket/image-features.env"
+fi
+
+# BOTTLEROCKET-ROOT-A
+if [[ "${EROFS_ROOT_PARTITION}" == "yes" ]]; then
+  mkfs_root_erofs "${ROOT_MOUNT}" "${ROOT_IMAGE}" "${SELINUX_FILE_CONTEXTS}"
+else
+  mkdir -p "${ROOT_MOUNT}/lost+found"
+  ROOT_LABELS=$(setfiles -n -d -F -m -r "${ROOT_MOUNT}" \
+    "${SELINUX_FILE_CONTEXTS}" "${ROOT_MOUNT}" |
+    awk -v root="${ROOT_MOUNT}" '{gsub(root"/","/"); gsub(root,"/"); print "ea_set", $1, "security.selinux", $4}')
+  mkfs.ext4 -E "lazy_itable_init=0,stride=${ROOT_STRIDE},stripe_width=${ROOT_STRIPE_WIDTH},num_backup_sb=0" -m 0 \
+    -O ^has_journal -O ^resize_inode -O sparse_super2 \
+    -b "${VERITY_DATA_BLOCK_SIZE}" -d "${ROOT_MOUNT}" "${ROOT_IMAGE}" "${partsize["ROOT-A"]}M"
+  echo "${ROOT_LABELS}" | debugfs -w -f - "${ROOT_IMAGE}"
+  resize2fs -M "${ROOT_IMAGE}"
+fi
+dd if="${ROOT_IMAGE}" of="${OS_IMAGE}" conv=notrunc bs=1M seek="${partoff["ROOT-A"]}"
+
+# Report ROOT partition usage
+if [[ "${EROFS_ROOT_PARTITION}" == "yes" ]]; then
+  root_usage=$(get_erofs_usage "${ROOT_IMAGE}" "ROOT-A" "${partsize["ROOT-A"]}")
+else
+  root_usage=$(get_ext4_usage "${ROOT_IMAGE}" "ROOT-A")
+fi
+
+# BOTTLEROCKET-VERITY-A
+declare -a DM_VERITY_ROOT
+generate_verity_root "${ROOT_IMAGE}" "${VERITY_IMAGE}" "${partsize["HASH-A"]}" \
+  DM_VERITY_ROOT
+dd if="${VERITY_IMAGE}" of="${OS_IMAGE}" conv=notrunc bs=1M seek="${partoff["HASH-A"]}"
+
+# write GRUB config
+# Include the parameters that support Boot Config. Stripped-down images
+# (`standalone-image = true`) have no PRIVATE partition to hold
+# bootconfig.data, so omit these entries entirely.
+if [[ "${STANDALONE_IMAGE}" == "no" ]]; then
+  BOOTCONFIG='bootconfig'
+  INITRD="initrd (\$private)/bootconfig.data"
+else
+  BOOTCONFIG=''
+  INITRD=''
+fi
+
+# If UEFI_SECURE_BOOT is set, disable interactive edits. Otherwise the intended
+# kernel command line parameters could be changed if the boot fails. Disable
+# signature checking as well, since grub.cfg will have already been verified
+# before we reach this point. bootconfig.data is generated at runtime and can't
+# be signed with a trusted key, so continuing to check signatures would prevent
+# it from being read. If boot fails, trigger an automatic reboot, since nothing
+# can be changed for troubleshooting purposes.
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  echo 'set superusers=""' >"${BOOT_MOUNT}/grub/grub.cfg"
+  echo 'set check_signatures="no"' >>"${BOOT_MOUNT}/grub/grub.cfg"
+  FALLBACK=$'   echo "rebooting in 30 seconds..."\n'
+  FALLBACK+=$'   sleep 30\n'
+  FALLBACK+=$'   reboot\n'
+else
+  FALLBACK=""
+fi
+
+# shellcheck disable=SC2154 # Some variables are defined by the environment.
+cat <<EOF >>"${BOOT_MOUNT}/grub/grub.cfg"
+set default="0"
+set timeout="0"
+set dm_verity_root="${DM_VERITY_ROOT[*]}"
+
+menuentry "${PRETTY_NAME} ${VERSION_ID}" --unrestricted {
+   linux (\$root)/vmlinuz \\
+       ${KERNEL_PARAMETERS} \\
+       ${BOOTCONFIG} \\
+       root=/dev/dm-0 rootwait ro \\
+       raid=noautodetect \\
+       random.trust_cpu=on \\
+       selinux=1 enforcing=1 \\
+       dm-mod.create="\$dm_verity_root" \\
+       -- \\
+       systemd.log_target=journal-or-kmsg \\
+       systemd.log_color=0 \\
+       systemd.show_status=true
+   ${INITRD}
+   boot
+   ${FALLBACK}
+}
+EOF
+
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  sign_grubcfg "${BOOT_MOUNT}/grub/grub.cfg"
+fi
+
+# Combine any bootconfig snippets in /boot for later use, then clean up.
+if [[ -d "${BOOT_MOUNT}/boot-config.d" ]]; then
+  # Verify all bootconfig snippets are single-line key=value format
+  if grep -E '^\s*[^#].*([:+]=|[{]|[,]\s*$)' "${BOOT_MOUNT}/boot-config.d"/* 2>/dev/null; then
+    echo "ERROR: bootconfig snippets must be single-line 'key = value' format" >&2
+    echo "Unsupported: braces, multi-line arrays, := and += operators" >&2
+    exit 1
+  fi
+
+  # Concatenate and sort snippets to ensure consistent ordering
+  find "${BOOT_MOUNT}/boot-config.d" -type f -mindepth 1 -maxdepth 1 -print0 |
+    xargs -0 cat | sort >"${BOOTCONFIG_INPUT}"
+  rm -rf "${BOOT_MOUNT}/boot-config.d"
+fi
+
+# Generate a no-op bootconfig if there weren't any snippets.
+if [[ ! -s "${BOOTCONFIG_INPUT}" ]]; then
+  echo -e "kernel {}\ninit {}" >"${BOOTCONFIG_INPUT}"
+fi
+
+# BOTTLEROCKET-BOOT-A
+mkdir -p "${BOOT_MOUNT}/lost+found"
+chmod -R go-rwx "${BOOT_MOUNT}"
+BOOT_LABELS=$(setfiles -n -d -F -m -r "${BOOT_MOUNT}" \
+  "${SELINUX_FILE_CONTEXTS}" "${BOOT_MOUNT}" |
+  awk -v root="${BOOT_MOUNT}" '{gsub(root"/","/"); gsub(root,"/"); print "ea_set", $1, "security.selinux", $4}')
+mkfs.ext4 -O ^has_journal -d "${BOOT_MOUNT}" "${BOOT_IMAGE}" "${partsize["BOOT-A"]}M"
+echo "${BOOT_LABELS}" | debugfs -w -f - "${BOOT_IMAGE}"
+resize2fs -M "${BOOT_IMAGE}"
+dd if="${BOOT_IMAGE}" of="${OS_IMAGE}" conv=notrunc bs=1M seek="${partoff["BOOT-A"]}"
+
+# Report BOOT partition usage
+boot_usage=$(get_ext4_usage "${BOOT_IMAGE}" "BOOT-A")
+
+# Combine usage data into final JSON
+echo "${root_usage}" "${boot_usage}" | jq -s 'add | {disk_usage: .}' > "${OUTPUT_DIR}/artifact-metadata.json"
+
+# BOTTLEROCKET-PRIVATE
+if [[ "${STANDALONE_IMAGE}" == "no" ]]; then
+  # Generate bootconfig file for the image.
+  touch "${PRIVATE_MOUNT}/bootconfig.data"
+  bootconfig -a "${BOOTCONFIG_INPUT}" "${PRIVATE_MOUNT}/bootconfig.data"
+
+  # Targeted toward the current API server implementation.
+  # Relative to the ext4 defaults, we:
+  # - adjust the inode ratio since we expect lots of small files
+  # - retain the inode size to allow most settings to be stored inline
+  # - retain the block size to handle worse-case alignment for hardware
+  mkfs.ext4 -b 4096 -i 4096 -I 256 -d "${PRIVATE_MOUNT}" "${PRIVATE_IMAGE}" "${partsize[PRIVATE]}M"
+  dd if="${PRIVATE_IMAGE}" of="${OS_IMAGE}" conv=notrunc bs=1M seek="${partoff[PRIVATE]}"
+fi
+
+# Predict PCR values after all partitions are written.
+if [[ "${UEFI_SECURE_BOOT}" == "yes" ]]; then
+  "${0%/*}/pcrsys" disk \
+    --image "${OS_IMAGE}" \
+    --efi-vars "${SBKEYS}/efi-vars.json" \
+    --platform "${VARIANT_PLATFORM,,}" \
+    > "${OUTPUT_DIR}/pcr-predictions.json"
+fi
+
+# BOTTLEROCKET-DATA-A and BOTTLEROCKET-DATA-B
+if [[ "${STANDALONE_IMAGE}" == "no" ]]; then
+  # If we build on a host with SELinux enabled, we could end up with labels that
+  # do not match our policy. Since we allow replacing the data volume at runtime,
+  # we can't count on these labels being correct in any case, and it's better to
+  # remove them all.
+  UNLABELED=$(find "${DATA_MOUNT}" |
+    awk -v root="${DATA_MOUNT}" '{gsub(root"/","/"); gsub(root,"/"); print "ea_rm", $1, "security.selinux"}')
+
+  # Decide which data filesystem to create at build time based on layout.
+  #
+  # The DATA-A partition will always exist, but for the "split" layout, it will be
+  # too small to provide the desired filesystem parameters (inode count, etc) when
+  # it is grown later on. Hence this filesystem is only created for "unified".
+  #
+  # The DATA-B partition does not exist on the "unified" layout, which anticipates
+  # a single storage device. Hence this filesystem is only created for "split".
+  #
+  # If the other partition is available at runtime, the filesystem will be created
+  # during first boot instead, providing flexibility at the cost of a minor delay.
+  if [[ "${XFS_DATA_PARTITION}" == "yes" ]]; then
+    mkfs_data_fn="mkfs_data_xfs"
+  else
+    mkfs_data_fn="mkfs_data_ext4"
+  fi
+
+  case "${PARTITION_PLAN}" in
+  unified)
+    "${mkfs_data_fn}" "${OS_IMAGE}" "${partsize["DATA-A"]}M" "${partoff["DATA-A"]}" \
+      "${BOTTLEROCKET_DATA}" "${DATA_MOUNT}" "${UNLABELED}"
+    ;;
+  split)
+    "${mkfs_data_fn}" "${DATA_IMAGE}" "${partsize["DATA-B"]}M" "${partoff["DATA-B"]}" \
+      "${BOTTLEROCKET_DATA}" "${DATA_MOUNT}" "${UNLABELED}"
+    ;;
+  *)
+    echo "unexpected partition plan '${PARTITION_PLAN}'" >&2
+    exit 1
+    ;;
+  esac
+fi
+
+sgdisk -v "${OS_IMAGE}"
+[[ -s "${DATA_IMAGE}" ]] && sgdisk -v "${DATA_IMAGE}"
+if [[ "${OUTPUT_FMT}" == "raw" ]]; then
+  compress_image "img.lz4" "os_image" "${OUTPUT_DIR}"
+  symlink_image "img.lz4" "os_image" "${OUTPUT_DIR}"
+  if [[ -s "${DATA_IMAGE}" ]]; then
+    compress_image "img.lz4" "data_image" "${OUTPUT_DIR}"
+    symlink_image "img.lz4" "data_image" "${OUTPUT_DIR}"
+  fi
+elif [[ "${OUTPUT_FMT}" == "qcow2" ]]; then
+  compress_image "qcow2" "os_image" "${OUTPUT_DIR}"
+  symlink_image "qcow2" "os_image" "${OUTPUT_DIR}"
+  if [[ -s "${DATA_IMAGE}" ]]; then
+    compress_image "qcow2" "data_image" "${OUTPUT_DIR}"
+    symlink_image "qcow2" "data_image" "${OUTPUT_DIR}"
+  fi
+elif [[ "${OUTPUT_FMT}" == "vmdk" ]]; then
+  # Stream optimization is required for creating an Open Virtual Appliance (OVA)
+  compress_image "vmdk" "os_image" "${OUTPUT_DIR}"
+  symlink_image "vmdk" "os_image" "${OUTPUT_DIR}"
+  if [[ -s "${DATA_IMAGE}" ]]; then
+    compress_image "vmdk" "data_image" "${OUTPUT_DIR}"
+    symlink_image "vmdk" "data_image" "${OUTPUT_DIR}"
+  fi
+fi
+
+# Now create the OVA if needed.
+if [[ "${OUTPUT_FMT}" == "vmdk" ]]; then
+  generate_ova \
+    "${OS_IMAGE_NAME}.vmdk" \
+    "${DATA_IMAGE_NAME}.vmdk" \
+    "${OS_IMAGE_PUBLISH_SIZE_GIB}" \
+    "${DATA_IMAGE_PUBLISH_SIZE_GIB}" \
+    "${OVF_TEMPLATE}" \
+    "${UEFI_SECURE_BOOT}" \
+    "${OUTPUT_DIR}"
+  symlink_image "ova" "os_image" "${OUTPUT_DIR}"
+fi
+
+compress_image "ext4.lz4" "boot_image" "${OUTPUT_DIR}"
+compress_image "verity.lz4" "verity_image" "${OUTPUT_DIR}"
+compress_image "ext4.lz4" "root_image" "${OUTPUT_DIR}"
+
+symlink_image "ext4.lz4" "boot_image" "${OUTPUT_DIR}"
+symlink_image "verity.lz4" "verity_image" "${OUTPUT_DIR}"
+symlink_image "ext4.lz4" "root_image" "${OUTPUT_DIR}"
+
+find "${OUTPUT_DIR}" -type f -print -exec chown 1000:1000 {} \;

@@ -16,7 +16,10 @@ use ocilot::models::Platform;
 use sha2::Digest;
 use sha2::Sha256;
 use snafu::OptionExt;
+use snafu::ResultExt;
 use tracing::trace;
+
+use crate::model::Arch;
 
 /// Dummy spec that `Provides: group(builder)`. RPM 6.0 turned the automatic
 /// `group()`/`user()` dependencies generated from file-ownership declarations
@@ -26,12 +29,13 @@ use tracing::trace;
 ///
 /// Sourced from `br-image` so `crates/br-image/data/builder-group.spec` is
 /// the single point of truth.
-const BUILDER_GROUP_SPEC: &str = crate::image::BUILDER_GROUP_SPEC;
+const BUILDER_GROUP_SPEC: &str = include_str!("../../data/builder-group.spec");
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct PackageBuildOptions {
     package: String,
-    arch: Option<String>,
+    #[serde(default)]
+    arch: Arch,
     #[serde(default)]
     depends: Vec<Addr>,
     #[serde(default)]
@@ -55,32 +59,23 @@ impl FromElement for PackageBuildTransform {
 
     async fn new(element: &Element, ctx: &Context) -> Result<Self, error::Error> {
         let mut options: PackageBuildOptions = element.get()?;
-        options.arch = Some(
-            ctx.args()
-                .get("arch")
-                .cloned()
-                .or(options.arch)
-                .unwrap_or(std::env::consts::ARCH.to_string()),
-        );
+        options.arch = if let Some(arch) = ctx.args().get("arch") {
+            Arch::parse(arch)?
+        } else {
+            options.arch
+        };
         let scope_table = element
             .source
             .as_ref()
             .and_then(|x| x.get_resolved())
             .cloned()
             .unwrap_or_default();
-        // Kit-image sources need the caller's target arch injected as
-        // an OCI `platform` field on the element before we register
-        // the source: the resolver emits the element without one (it
-        // operates on the multi-arch index), and the source would
-        // otherwise fall back to the host arch and cache-collide
-        // across cross-compile targets. See `KitImageSource::get_unique_id`.
-        let target_arch = options.arch.as_deref().unwrap_or(std::env::consts::ARCH);
         let mut kits = Vec::new();
         let mut archives = Vec::new();
         let mut sources = Vec::new();
         if let Some(kit_list) = scope_table.get("kit") {
             for element in kit_list {
-                let scoped = crate::source::apply_target_arch(element, target_arch);
+                let scoped = crate::kit::apply_target_arch(element, &options.arch);
                 kits.push(ctx.add_source(&scoped).await?);
             }
         }
@@ -161,7 +156,7 @@ impl TransformImpl for PackageBuildTransform {
         let id = Id::builder()
             .name(self.addr.to_id())
             .digest(digest.to_lowercase())
-            .maybe_arch(self.options.arch.clone())
+            .arch(self.options.arch.to_string())
             .build();
         trace!(component = "transform", type = "rpm", "id is calculated to be {id}");
         Ok(id.clone())
@@ -348,11 +343,7 @@ impl TransformImpl for PackageBuildTransform {
             let specs = rpmbuild.create_dir("SPECS").await?;
 
             // Step 2: Set architecture template variable from context arguments
-            let architecture = self
-                .options
-                .arch
-                .clone()
-                .unwrap_or(std::env::consts::ARCH.to_string());
+            let architecture = self.options.arch.to_string();
 
             // Step 3: Copy arch-specific RPM macros for cross compilation
             vfs.copy(
@@ -613,6 +604,8 @@ pub mod error {
         Field { field: String, type_: String },
         #[snafu(display("package transform configuration missing required sdk tag"))]
         SdkMissing,
+        #[snafu(transparent)]
+        Arch { source: crate::model::ArchError },
     }
 
     impl From<Error> for TransformError {

@@ -1,0 +1,587 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034 # Variables are used externally by rpm2img/img2img.
+
+###############################################################################
+# Section 1: partition type GUIDs and partition GUIDs
+
+# Define partition type GUIDs for all OS-managed partitions. This is required
+# for the boot partition, where we set gptprio bits in the GUID-specific use
+# field, but we might as well do it for all of them.
+BOTTLEROCKET_BOOT_TYPECODE="6b636168-7420-6568-2070-6c616e657421"
+BOTTLEROCKET_ROOT_TYPECODE="5526016a-1a97-4ea4-b39a-b7c8c6ca4502"
+BOTTLEROCKET_HASH_TYPECODE="598f10af-c955-4456-6a99-7720068a6cea"
+BOTTLEROCKET_RESERVED_TYPECODE="0c5d99a5-d331-4147-baef-08e2b855bdc9"
+BOTTLEROCKET_PRIVATE_TYPECODE="440408bb-eb0b-4328-a6e5-a29038fad706"
+BOTTLEROCKET_DATA_TYPECODE="626f7474-6c65-6474-6861-726d61726b73"
+
+# Under BIOS, the firmware will transfer control to the MBR on the boot device,
+# which will pass control to the GRUB stage 2 binary written to the BIOS boot
+# partition. The BIOS does not attach any significance to this partition type,
+# but GRUB knows to install itself there when we run `grub-bios-setup`.
+BIOS_BOOT_TYPECODE="ef02"
+
+# Under EFI, the firmware will find the EFI system partition and execute the
+# program at a platform-defined path like `bootx64.efi`. The partition type
+# must match what the firmware expects.
+EFI_SYSTEM_TYPECODE="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+
+# Whichever entry point is used for booting the system, it's important to note
+# that only one build of GRUB is involved - the one that's installed during the
+# image build.
+
+# GRUB understands the GPT priorities scheme we use to find the active boot
+# partition; EFI and BIOS firmware does not. This is why we do not update GRUB
+# during our system updates; we would have no way to revert to an earlier copy
+# of the bootloader if it failed to boot.
+#
+# We may eventually want to have an active/passive scheme for EFI partitions,
+# to allow for potential GRUB and shim updates on EFI platforms in cases where
+# we need to deliver security fixes. For now, add a placeholder partition type
+# for an alternate bank.
+EFI_BACKUP_TYPECODE="B39CE39C-0A00-B4AB-2D11-F18F8237A21C"
+
+# Define partition GUIDs for the data partitions. We use the GUID for determining
+# which data partition to label and use at boot.
+BOTTLEROCKET_DATA_PREFERRED_PARTGUID="5b94e8df-28b8-485c-9d19-362263b5944c"
+BOTTLEROCKET_DATA_FALLBACK_PARTGUID="69040874-417d-4e26-a764-7885f22007ea"
+
+###############################################################################
+# Section 2: fixed size partitions and reservations
+
+# The GPT header and footer each take up 32 sectors, but we reserve a full MiB
+# so that partitions can all be aligned on MiB boundaries.
+GPT_MIB="1" # two per disk
+
+# The BIOS partition is only used on x86 platforms, and only needs to be large
+# enough for the GRUB stage 2. Increasing its size will reduce the size of the
+# "private" and "reserved" partitions. This should be relatively safe since we
+# don't apply image updates to those partitions.
+BIOS_MIB="4" # one per disk
+
+# The GPT and BIOS reservations are fixed overhead that will be deducted from
+# the space nominally given to the private partition used to persist settings.
+OVERHEAD_MIB="$((GPT_MIB * 2 + BIOS_MIB))"
+
+# The 'recommended' size for the EFI partition is 100MB but our EFI images are
+# under 2MB, so this will suffice for now. It would be possible to increase the
+# EFI partition size by taking space from the "reserved" area below.
+EFI_MIB="5" # one per bank
+
+# Allocate 1 MiB for the initial data partition A.
+DATA_A_MIB="1" # one per disk
+
+###############################################################################
+# Section 3: variable sized partitions
+
+# These partitions scale based on image size. The scaling factors are chosen so
+# that we end up with the same partition sizes for the banks on a 2 GiB image,
+# which was the only image size we historically supported.
+#
+# !!! WARNING !!!
+#
+# Increasing any of these constants is very likely to break systems on update,
+# since the corresponding partitions are adjacent on disk and have no room to
+# grow.
+BOOT_SCALE_FACTOR="20"
+ROOT_SCALE_FACTOR="460"
+HASH_SCALE_FACTOR="5"
+RESERVE_SCALE_FACTOR="15"
+PRIVATE_SCALE_FACTOR="24"
+
+###############################################################################
+# Section 4: ASCII art gallery
+
+# Layout for a 1 GiB OS image that supports in-place updates.
+# Sizes marked with (*) scale with overall image size, based on the constant
+# factors above.
+
+#          +---------------------------------+
+#  Prelude | GPT header               1 MiB  | 5 MiB
+#          | BIOS boot partition      4 MiB  | Fixed size.
+#          +---------------------------------+
+#          | EFI system partition     5 MiB  |
+#          | Boot partition A        20 MiB* | (image size - prelude - postlude) / 2
+#   Bank A | Root partition A       460 MiB* | Example: (1 GiB - 5 MiB - 19 MiB) / 2
+#          | Hash partition A         5 MiB* |          500 MiB
+#          | Reserved partition A    10 MiB* |
+#          +---------------------------------+
+#          | EFI backup partition     5 MiB  |
+#          | Boot partition B        20 MiB* | (image size - prelude - postlude) / 2
+#   Bank B | Root partition B       460 MiB* | Example: (1 GiB - 5 MiB - 19 MiB) / 2
+#          | Hash partition B         5 MiB* |          500 MiB
+#          | Reserved partition B    10 MiB* |
+#          +---------------------------------+
+#          | Private partition       17 MiB* | (image size * 24 as MiB) - prelude - DATA-A size
+#          | Data partition A         1 MiB  | Data partition A
+# Postlude | GPT footer               1 MiB  | GPT is fixed, private partition grows.
+#          +---------------------------------+
+
+# Layout for a 1 GiB OS image that does not support in-place updates.
+# Sizes marked with (*) scale with overall image size, based on the constant
+# factors above.
+
+#          +---------------------------------+
+#  Prelude | GPT header               1 MiB  | 5 MiB
+#          | BIOS boot partition      4 MiB  | Fixed size.
+#          +---------------------------------+
+#          | EFI system partition    10 MiB  |
+#          | Boot partition          40 MiB* | (image size - prelude - postlude) / 2
+#   Bank A | Root partition         920 MiB* | Example: (1 GiB - 5 MiB - 19 MiB) / 2
+#          | Hash partition          10 MiB* |          1000 MiB
+#          | Reserved partition      20 MiB* |
+#          +---------------------------------+
+#          | Private partition       17 MiB* | (image size * 24 as MiB) - prelude - DATA-A size
+#          | Data partition A         1 MiB  | Data partition A
+# Postlude | GPT footer               1 MiB  | GPT is fixed, private partition grows.
+#          +---------------------------------+
+
+# Layout for an OS image with `standalone-image = true` (default 1 GiB):
+# single bank, no RESERVED, no PRIVATE, no DATA. ROOT-A absorbs all the slack
+# that would otherwise go to those partitions. The variant has no
+# Bottlerocket-managed datastore or settings subsystem, so there is nothing
+# to persist.
+# Sizes marked with (*) scale with overall image size, but ROOT-A is the
+# residual: ROOT-A = (image size MiB) - GPT*2 - BIOS - EFI-A - BOOT-A - HASH-A.
+
+#          +---------------------------------+
+#  Prelude | GPT header               1 MiB  | 5 MiB
+#          | BIOS boot partition      4 MiB  | Fixed size.
+#          +---------------------------------+
+#          | EFI system partition    10 MiB  |
+#          | Boot partition          40 MiB* |
+#   Bank A | Root partition       residual*  | absorbs RESERVED + PRIVATE + DATA-A slack
+#          | Hash partition          10 MiB* |
+# Postlude | GPT footer               1 MiB  |
+#          +---------------------------------+
+
+##############################################################################
+# Section 5: library functions
+
+# Populate the caller's tables with sizes and offsets for partitions of
+# existing images.
+get_partition_sizes() {
+  local os_image data_image
+  local -n pt_size pt_offset
+  os_image="$1"
+  data_image="$2"
+
+  # Table for partition sizes, in MiB.
+  pt_size="${3:?}"
+
+  # Table for partition offsets from start of disk, in MiB.
+  pt_offset="${4:?}"
+
+  local -a images
+  images=("${os_image}")
+  if [[ -n "${data_image}" ]]; then
+    images+=("${data_image}")
+  fi
+
+  local partitions part_info part_name part_offset part_size part_key
+  for image in "${images[@]}" ; do
+    partitions="$(sgdisk --print "${image}" | awk 'END {print $1}')"
+    for p in $(seq 1 "${partitions}") ; do
+      part_info="$(sgdisk -i "${p}" "${os_image}")"
+      part_name="$(awk -F"'" '/Partition name:/{print $2}'<<<"${part_info}")"
+      [ -n "${part_name}" ] || continue
+      part_offset="$(awk '/First sector:/{print $3}'<<<"${part_info}")"
+      part_size="$(awk '/Partition size:/{print $3}'<<<"${part_info}")"
+      case "${part_name}" in
+      BIOS-BOOT)
+        part_key="BIOS"
+        ;;
+      EFI-SYSTEM)
+        part_key="EFI-A"
+        ;;
+      EFI-BACKUP)
+        part_key="EFI-B"
+        ;;
+      *)
+        part_key="${part_name#BOTTLEROCKET-}"
+        ;;
+      esac
+
+      # 1 MiB contains 2048 512-byte sectors.
+      pt_offset["${part_key}"]="$(( part_offset / 2048 ))"
+      pt_size["${part_key}"]="$(( part_size / 2048 ))"
+    done
+  done
+}
+
+# Populate the caller's tables with sizes and offsets for known partitions.
+#
+# Positional arguments (kept in fixed order for backward compatibility with
+# existing callers in `rpm2img` and `img2img`):
+#   $1  os_image_gib       OS image size in GiB. Required, must be a positive
+#                          integer. The caller is responsible for resolving
+#                          any feature-dependent default (e.g. 1 GiB when
+#                          `standalone-image = true`) before invoking this
+#                          function; we use the value as-is.
+#   $2  data_image_gib     Data image size in GiB. Required even when
+#                          `standalone_image=yes` (where it is unused) so
+#                          that the parameter list remains stable.
+#   $3  partition_plan     "split" or "unified".
+#   $4  in_place_updates   "yes" or "no". Ignored when `standalone_image=yes`;
+#                          the two are validated as mutually exclusive below.
+#   $5  pp_size            (nameref) bash assoc-array to populate with sizes.
+#   $6  pp_offset          (nameref) bash assoc-array to populate with offsets.
+#   $7  standalone_image  (optional, default "no") "yes" or "no". When
+#                          "yes", a single-bank stripped-down layout is
+#                          produced with no RESERVED, PRIVATE, or DATA
+#                          partitions.
+set_partition_sizes() {
+  local os_image_gib data_image_gib partition_plan in_place_updates standalone_image
+  local -n pp_size pp_offset
+  os_image_gib="${1:?}"
+  data_image_gib="${2:?}"
+
+  # Whether we're building a layout for a "split" image, where OS and data
+  # volumes are on separate disks, or a "unified" image, where they share the
+  # same disk.
+  partition_plan="${3:?}"
+
+  # Whether the image should support in-place updates, where two banks of OS
+  # partitions are available to store active/passive update images.
+  in_place_updates="${4:?}"
+
+  # Table for partition sizes, in MiB.
+  pp_size="${5:?}"
+
+  # Table for partition offsets from start of disk, in MiB.
+  pp_offset="${6:?}"
+
+  # Whether we're building the stripped-down image (standalone configuration
+  # without the first-party Bottlerocket software stack) or the standard
+  # Bottlerocket image. Defaults to "no" if not provided so existing direct
+  # callers continue to get the standard layout unchanged.
+  standalone_image="${7:-no}"
+
+  # Most of the partitions on the main image scale with the overall size.
+  local boot_mib root_mib hash_mib reserved_mib private_mib
+  boot_mib="$((os_image_gib * BOOT_SCALE_FACTOR))"
+  root_mib="$((os_image_gib * ROOT_SCALE_FACTOR))"
+  hash_mib="$((os_image_gib * HASH_SCALE_FACTOR))"
+
+  # Fast-path the stripped-down layout (`standalone-image = true`). Single
+  # bank, no RESERVED-A, no PRIVATE, no DATA-A/B; ROOT-A is sized so that
+  # the partitions exactly fill the nominal image size and the GPT footer
+  # is preserved.
+  if [[ "${standalone_image}" == "yes" ]]; then
+    # Defense-in-depth: the buildsys validator and the rpm2img/img2img
+    # entry-point checks already reject these combinations, but a stale or
+    # buggy direct caller of this function should also fail loudly rather
+    # than silently producing an unexpected layout.
+    if [[ "${in_place_updates}" == "yes" ]]; then
+      echo "set_partition_sizes: standalone_image=yes is incompatible with in_place_updates=yes" >&2
+      exit 1
+    fi
+    if [[ "${partition_plan}" == "split" ]]; then
+      echo "set_partition_sizes: standalone_image=yes is incompatible with partition_plan=split" >&2
+      exit 1
+    fi
+
+    local total_mib offset
+    total_mib="$((os_image_gib * 1024))"
+    ((offset = 1)) # GPT header
+
+    pp_offset["BIOS"]="${offset}"
+    pp_size["BIOS"]="${BIOS_MIB}"
+    ((offset += BIOS_MIB))
+
+    pp_offset["EFI-A"]="${offset}"
+    pp_size["EFI-A"]="$(( EFI_MIB * 2 ))"
+    ((offset += EFI_MIB * 2))
+
+    pp_offset["BOOT-A"]="${offset}"
+    pp_size["BOOT-A"]="$(( boot_mib * 2 ))"
+    ((offset += boot_mib * 2))
+
+    # ROOT-A absorbs all the leftover space between BOOT-A and HASH-A, so:
+    # ROOT-A = total - GPT(header) - BIOS - EFI-A*2 - BOOT-A*2 - HASH-A*2 - GPT(footer)
+    local root_a_mib
+    root_a_mib="$(( total_mib - 1 - BIOS_MIB - (EFI_MIB * 2) - (boot_mib * 2) - (hash_mib * 2) - 1 ))"
+    if (( root_a_mib <= 0 )); then
+      echo "image size ${os_image_gib} GiB is too small for standalone_image=yes partition layout" >&2
+      exit 1
+    fi
+    pp_offset["ROOT-A"]="${offset}"
+    pp_size["ROOT-A"]="${root_a_mib}"
+    ((offset += root_a_mib))
+
+    pp_offset["HASH-A"]="${offset}"
+    pp_size["HASH-A"]="$(( hash_mib * 2 ))"
+    ((offset += hash_mib * 2))
+
+    # Sanity check: offsets + GPT footer must equal total_mib.
+    if (( offset + 1 != total_mib )); then
+      echo "standalone_image=yes partition layout offset mismatch: offset=${offset}, total=${total_mib}" >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  # Reserved space is everything left in the bank after the other partitions
+  # are scaled, minus the fixed 5 MiB EFI partition in that bank.
+  reserved_mib=$((os_image_gib * RESERVE_SCALE_FACTOR - EFI_MIB))
+
+  # Private space scales per GiB, minus the BIOS and GPT partition overhead.
+  private_mib=$((os_image_gib * PRIVATE_SCALE_FACTOR - OVERHEAD_MIB))
+  # We need 1 MiB of space for data partition A.
+  private_mib=$((private_mib - DATA_A_MIB))
+
+  # Skip the GPT label at start of disk.
+  local offset
+  ((offset = 1))
+
+  pp_offset["BIOS"]="${offset}"
+  pp_size["BIOS"]="${BIOS_MIB}"
+  ((offset += BIOS_MIB))
+
+  if [[ "${in_place_updates}" == "yes" ]]; then
+    # Allocate two partition banks to support in-place updates.
+    for bank in A B; do
+      pp_offset["EFI-${bank}"]="${offset}"
+      pp_size["EFI-${bank}"]="${EFI_MIB}"
+      ((offset += EFI_MIB))
+
+      pp_offset["BOOT-${bank}"]="${offset}"
+      pp_size["BOOT-${bank}"]="${boot_mib}"
+      ((offset += boot_mib))
+
+      pp_offset["ROOT-${bank}"]="${offset}"
+      pp_size["ROOT-${bank}"]="${root_mib}"
+      ((offset += root_mib))
+
+      pp_offset["HASH-${bank}"]="${offset}"
+      pp_size["HASH-${bank}"]="${hash_mib}"
+      ((offset += hash_mib))
+
+      pp_offset["RESERVED-${bank}"]="${offset}"
+      pp_size["RESERVED-${bank}"]="${reserved_mib}"
+      ((offset += reserved_mib))
+    done
+  else
+    # Allocate a single partition bank, where each partition is twice as large.
+    pp_offset["EFI-A"]="${offset}"
+    pp_size["EFI-A"]="$(( EFI_MIB * 2 ))"
+    ((offset += EFI_MIB * 2))
+
+    pp_offset["BOOT-A"]="${offset}"
+    pp_size["BOOT-A"]="$(( boot_mib * 2 ))"
+    ((offset += boot_mib * 2))
+
+    pp_offset["ROOT-A"]="${offset}"
+    pp_size["ROOT-A"]="$(( root_mib * 2 ))"
+    ((offset += root_mib * 2))
+
+    pp_offset["HASH-A"]="${offset}"
+    pp_size["HASH-A"]="$(( hash_mib * 2 ))"
+    ((offset += hash_mib * 2))
+
+    pp_offset["RESERVED-A"]="${offset}"
+    pp_size["RESERVED-A"]="$(( reserved_mib * 2 ))"
+    ((offset += reserved_mib * 2))
+  fi
+
+  pp_offset["PRIVATE"]="${offset}"
+  pp_size["PRIVATE"]="${private_mib}"
+  ((offset += private_mib))
+
+  case "${partition_plan}" in
+  split)
+    # For data partition A that lives on the OS image
+    pp_offset["DATA-A"]="${offset}"
+    pp_size["DATA-A"]="${DATA_A_MIB}"
+    ((offset += DATA_A_MIB))
+
+    # For a split data image, the first and last MiB are reserved for the GPT
+    # labels, and the rest is for data partition B.
+    pp_size["DATA-B"]="$((data_image_gib * 1024 - GPT_MIB * 2))"
+    pp_offset["DATA-B"]="1"
+    ;;
+  unified)
+    # For a unified image, we've already accounted for the GPT label space in
+    # the earlier calculations, so all the space is for the data partition.
+    pp_size["DATA-A"]="$((data_image_gib * 1024))"
+    pp_offset["DATA-A"]="${offset}"
+    ((offset += data_image_gib * 1024))
+    ;;
+  *)
+    echo "unknown partition plan '${partition_plan}'" >&2
+    exit 1
+    ;;
+  esac
+}
+
+# Populate the caller's tables with sizes and offsets for the EIF sidecar
+# disk-image layout: a minimal 2-partition GPT with just ROOT-A (erofs
+# rootfs) and HASH-A (dm-verity hash tree).
+#
+# EIF images do not use any of the scale factors that drive the standard
+# `set_partition_sizes` layout, because there is no fixed 2 GiB reference
+# point to scale against: the rootfs is whatever `mkfs.erofs` produces, and
+# the verity hash tree is a function of the rootfs size. This helper is a
+# separate entry point (rather than a mode of `set_partition_sizes`) so
+# that:
+#   - The math stays simple to read and easy to test in isolation.
+#   - The existing `standalone_image=yes` path continues to size ROOT-A
+#     against the nominal image size (residual), while EIF sizes the disk
+#     image against the *actual* content plus optional padding.
+#   - Direct callers of `set_partition_sizes` cannot accidentally invoke
+#     the EIF layout by passing a sentinel value.
+#
+# Positional arguments:
+#   $1  rootfs_mib      Size of the erofs rootfs, rounded up to a whole MiB.
+#                       Required, must be a positive integer.
+#   $2  verity_mib      Size reserved for the dm-verity hash tree, in MiB.
+#                       Required, must be a positive integer. Callers
+#                       typically compute this from `rootfs_mib` (roughly
+#                       `rootfs_mib/64 + a few MiB slack`) and pass it
+#                       through unchanged.
+#   $3  pp_size         (nameref) bash assoc-array to populate with sizes.
+#   $4  pp_offset       (nameref) bash assoc-array to populate with offsets.
+#   $5  target_mib      (optional) target total disk size in MiB. When
+#                       provided (and non-zero), ROOT-A is padded upward
+#                       from `rootfs_mib` so that the resulting disk image
+#                       is exactly `target_mib` MiB. Must be at least
+#                       `rootfs_mib + verity_mib + 2` (2 MiB of GPT
+#                       overhead). When omitted or 0, the disk is
+#                       tight-fitted at `rootfs_mib + verity_mib + 2` MiB.
+#
+# Layout produced (offsets in MiB from start of disk):
+#
+#   +-------------------------------------------+
+#   | GPT header                        1 MiB   | offset 0
+#   +-------------------------------------------+
+#   | ROOT-A          rootfs_mib (+padding)     | offset 1
+#   +-------------------------------------------+
+#   | HASH-A                     verity_mib     | offset 1 + ROOT-A size
+#   +-------------------------------------------+
+#   | GPT footer                        1 MiB   | offset = disk - 1
+#   +-------------------------------------------+
+set_eif_partition_sizes() {
+  local rootfs_mib verity_mib target_mib
+  local -n pp_size pp_offset
+  rootfs_mib="${1:?rootfs_mib required}"
+  verity_mib="${2:?verity_mib required}"
+  pp_size="${3:?}"
+  pp_offset="${4:?}"
+  target_mib="${5:-0}"
+
+  # Validate positive integers so we don't hand `sgdisk` garbage. The `:?`
+  # above only rejects empty strings; explicit numeric checks catch
+  # non-numeric input and negative sizes.
+  local n
+  for n in "${rootfs_mib}" "${verity_mib}" "${target_mib}"; do
+    if ! [[ "${n}" =~ ^[0-9]+$ ]]; then
+      echo "set_eif_partition_sizes: expected non-negative integer, got '${n}'" >&2
+      exit 1
+    fi
+  done
+  # Defensive: the regex above already restricts to non-negative integers, so
+  # in practice only 0 can slip through. Comparing `<= 0` still catches any
+  # future regression that lets a signed value through.
+  if (( rootfs_mib <= 0 )) || (( verity_mib <= 0 )); then
+    echo "set_eif_partition_sizes: rootfs_mib and verity_mib must be > 0" >&2
+    exit 1
+  fi
+
+  # `2` accounts for the GPT header + footer, each 1 MiB.
+  local minimum_mib=$(( rootfs_mib + verity_mib + 2 ))
+  local root_a_mib=${rootfs_mib}
+  if (( target_mib > 0 )); then
+    if (( target_mib < minimum_mib )); then
+      echo "set_eif_partition_sizes: target ${target_mib} MiB is smaller than \
+required minimum ${minimum_mib} MiB (rootfs=${rootfs_mib}, verity=${verity_mib}, \
+GPT overhead=2)" >&2
+      exit 1
+    fi
+    # Grow ROOT-A to absorb the padding. rpm2eif does not use this extra
+    # space at runtime -- it's for downstream consumers that want a
+    # predictable disk-image size (e.g., embedding the EIF disk into a
+    # larger host image, or aligning to a cloud volume size).
+    root_a_mib=$(( target_mib - verity_mib - 2 ))
+  fi
+
+  local offset=1 # skip GPT header
+  pp_offset["ROOT-A"]="${offset}"
+  pp_size["ROOT-A"]="${root_a_mib}"
+  ((offset += root_a_mib))
+
+  pp_offset["HASH-A"]="${offset}"
+  pp_size["HASH-A"]="${verity_mib}"
+  ((offset += verity_mib))
+
+  # Sanity check: the final offset plus the GPT footer must equal the
+  # total disk size. This catches arithmetic mistakes in the branches
+  # above rather than surfacing them as cryptic `sgdisk` errors later.
+  local expected_total=$(( target_mib > 0 ? target_mib : minimum_mib ))
+  if (( offset + 1 != expected_total )); then
+    echo "set_eif_partition_sizes: offset mismatch: offset=${offset}, expected_total=${expected_total}" >&2
+    exit 1
+  fi
+}
+
+# Populate the caller's table with labels for known partitions.
+set_partition_labels() {
+  local -n pp_label
+  pp_label="${1:?}"
+  pp_label["BIOS"]="BIOS-BOOT"
+  pp_label["EFI-A"]="EFI-SYSTEM"
+  pp_label["EFI-B"]="EFI-BACKUP"
+  # Empty label for the data partitions. We're labeling the data partition
+  # during boot.
+  pp_label["DATA-A"]=""
+  pp_label["DATA-B"]=""
+  pp_label["PRIVATE"]="BOTTLEROCKET-PRIVATE"
+  for part in BOOT ROOT HASH RESERVED; do
+    for bank in A B; do
+      pp_label["${part}-${bank}"]="BOTTLEROCKET-${part}-${bank}"
+    done
+  done
+}
+
+# Populate the caller's table with GPT type codes for known partitions.
+set_partition_types() {
+  local -n pp_type
+  pp_type="${1:?}"
+  pp_type["BIOS"]="${BIOS_BOOT_TYPECODE}"
+  pp_type["DATA-A"]="${BOTTLEROCKET_DATA_TYPECODE}"
+  pp_type["DATA-B"]="${BOTTLEROCKET_DATA_TYPECODE}"
+  pp_type["EFI-A"]="${EFI_SYSTEM_TYPECODE}"
+  pp_type["EFI-B"]="${EFI_BACKUP_TYPECODE}"
+  pp_type["PRIVATE"]="${BOTTLEROCKET_PRIVATE_TYPECODE}"
+  local typecode
+  for part in BOOT ROOT HASH RESERVED; do
+    for bank in A B; do
+      typecode="BOTTLEROCKET_${part}_TYPECODE"
+      typecode="${!typecode}"
+      pp_type["${part}-${bank}"]="${typecode}"
+    done
+  done
+}
+
+# Populate the caller's table with GPT partition UUIDs for DATA-A and
+# DATA-B partitions.
+set_partition_uuids() {
+  local -n pp_uuid
+  pp_uuid="${1:?}"
+  # Whether we're building a layout for a "split" image, where OS and data
+  # volumes are on separate disks, or a "unified" image, where they share the
+  # same disk.
+  partition_plan="${2:?}"
+  case "${partition_plan}" in
+  split)
+    pp_uuid["DATA-A"]="${BOTTLEROCKET_DATA_FALLBACK_PARTGUID}"
+    pp_uuid["DATA-B"]="${BOTTLEROCKET_DATA_PREFERRED_PARTGUID}"
+    ;;
+  unified)
+    pp_uuid["DATA-A"]="${BOTTLEROCKET_DATA_PREFERRED_PARTGUID}"
+    pp_uuid["DATA-B"]="${BOTTLEROCKET_DATA_FALLBACK_PARTGUID}"
+    ;;
+  *)
+    echo "unknown partition plan '${partition_plan}'" >&2
+    exit 1
+    ;;
+  esac
+}

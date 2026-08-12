@@ -1,0 +1,947 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034
+# Some variables are used through parameter substitution or reference.
+# shellcheck disable=SC2312 # pipefail should be set by the caller.
+
+FILENAME_PREFIX="${IMAGE_NAME:?}-${VARIANT:?}-${ARCH:?}-${VERSION_ID:?}-${BUILD_ID:?}"
+SYMLINK_PREFIX="${IMAGE_NAME:?}-${VARIANT:?}-${ARCH:?}"
+
+DATA_IMAGE_SUFFIX="-data"
+BOOT_IMAGE_SUFFIX="-boot"
+VERITY_IMAGE_SUFFIX="-root"
+ROOT_IMAGE_SUFFIX="-root"
+
+# Single source of truth for the file extensions produced by an image build.
+# `compress_image` below validates its `ext` argument against this list, and
+# `guest-images-helper` iterates it to pick which artifacts to embed into a
+# host variant's rootfs. Adding a new image format therefore means adding its
+# suffix here first; forgetting to update this list will fail the build at
+# `compress_image` rather than silently dropping the artifact from an
+# embedding host. `ova` is included because a `.ova` bundle is a first-class
+# image artifact even though it is assembled by `generate_ova` (via `tar`)
+# rather than by `compress_image`.
+IMAGE_ARTIFACT_SUFFIXES=(
+  "img.lz4"
+  "qcow2"
+  "vmdk"
+  "ova"
+  "ext4.lz4"
+  "verity.lz4"
+  "eif"
+)
+
+# Additional find-name globs for artifacts that do not follow the `*.suffix`
+# dot-separated convention. `rpm2eif` produces `{prefix}-disk.img` and
+# `{prefix}-kernel` using a hyphen separator rather than a dot, so they cannot
+# be expressed as entries in IMAGE_ARTIFACT_SUFFIXES. These patterns are used
+# only by `copy_guest_image_artifacts` in `guest-images-helper`; they are NOT
+# validated by `compress_image` (which only handles dot-suffixed extensions).
+IMAGE_ARTIFACT_GLOBS=(
+  "*-disk.img"
+  "*-kernel"
+)
+
+OS_IMAGE_NAME="${FILENAME_PREFIX}"
+DATA_IMAGE_NAME="${FILENAME_PREFIX}${DATA_IMAGE_SUFFIX}"
+BOOT_IMAGE_NAME="${FILENAME_PREFIX}${BOOT_IMAGE_SUFFIX}"
+VERITY_IMAGE_NAME="${FILENAME_PREFIX}${VERITY_IMAGE_SUFFIX}"
+ROOT_IMAGE_NAME="${FILENAME_PREFIX}${ROOT_IMAGE_SUFFIX}"
+
+VERITY_VERSION=1
+VERITY_HASH_ALGORITHM=sha256
+VERITY_DATA_BLOCK_SIZE=4096
+VERITY_HASH_BLOCK_SIZE=4096
+
+SBKEYS="${HOME}/sbkeys"
+
+# Pre-emptively declare global arrays to be populated later.
+declare -a SHIM_SIGN_KEY CODE_SIGN_KEY
+
+sanity_checks() {
+  local output_fmt partition_plan ovf_template uefi_secure_boot sbom_package_dir
+  output_fmt="${1:?}"
+  partition_plan="${2:?}"
+  ovf_template="${3:?}"
+  uefi_secure_boot="${4:?}"
+  sbom_package_dir="${5:-}"
+
+  if [[ -n "${sbom_package_dir}" ]] && [[ ! -d "${sbom_package_dir}" ]]; then
+    echo "SBOM package directory does not exist: ${sbom_package_dir}" >&2
+    exit 1
+  fi
+
+  case "${output_fmt}" in
+  raw | qcow2 | vmdk) ;;
+  *)
+    echo "unexpected image output format '${output_fmt}'" >&2
+    exit 1
+    ;;
+  esac
+
+  case "${partition_plan}" in
+  split | unified) ;;
+  *)
+    echo "unexpected partition plan '${partition_plan}'" >&2
+    exit 1
+    ;;
+  esac
+
+  # Fail fast if the OVF template doesn't exist, or doesn't match the layout.
+  if [ "${output_fmt}" == "vmdk" ]; then
+    if [ ! -s "${ovf_template}" ]; then
+      echo "required OVF template not found: ${ovf_template}" >&2
+      exit 1
+    fi
+
+    if [ "${partition_plan}" == "split" ]; then
+      if ! grep -Fq '{{DATA_DISK}}' "${ovf_template}"; then
+        echo "Missing data disk in OVF template, which is required for 'split' layout." >&2
+        exit 1
+      fi
+    fi
+
+    if [ "${partition_plan}" == "unified" ]; then
+      if grep -Fq '{{DATA_DISK}}' "${ovf_template}"; then
+        echo "Data disk included in OVF template, which is not supported for 'unified' layout." >&2
+        exit 1
+      fi
+    fi
+
+    if [ "${uefi_secure_boot}" == "yes" ]; then
+      if ! grep -Fq '{{DB_CERT_DER_HEX}}' "${ovf_template}"; then
+        echo "Missing CA certificate field in OVF template, which is required for Secure Boot support." >&2
+        exit 1
+      fi
+    fi
+  fi
+}
+
+decompress_image() {
+  local ext what input_dir input_image image_name
+  ext="${1:?}"
+  what="${2:?}"
+  input_dir="${3:?}"
+
+  input_image="${what^^}"
+  image_name="${what^^}_NAME"
+
+  case "${ext}" in
+  *lz4)
+    unlz4 -f "${input_dir}/${!image_name}${ext:+.${ext}}" "${!image_name}.img"
+    ;;
+  qcow2)
+    qemu-img convert -f "${ext}" -O raw \
+      "${input_dir}/${!image_name}${ext:+.${ext}}" "${!image_name}.img"
+    ;;
+  vmdk)
+    qemu-img convert -f "${ext}" -O raw \
+      "${input_dir}/${!image_name}${ext:+.${ext}}" "${!image_name}.img"
+    ;;
+  *)
+    echo "unexpected extension: ${ext}" >&2
+    exit 1
+    ;;
+  esac
+}
+
+compress_image() {
+  local ext what output_dir input_image image_name
+  ext="${1:?}"
+  what="${2:?}"
+  output_dir="${3:?}"
+  input_image="${what^^}"
+  image_name="${what^^}_NAME"
+
+  # Reject any extension that isn't in the canonical artifact list, so that a
+  # new image format cannot slip past the drift-detection contract with
+  # `guest-images-helper`. `.ova` is intentionally in the array but not here:
+  # OVAs are built by `generate_ova`, not `compress_image`.
+  local known suffix
+  known="no"
+  for suffix in "${IMAGE_ARTIFACT_SUFFIXES[@]}"; do
+    if [[ "${ext}" == "${suffix}" ]]; then
+      known="yes"
+      break
+    fi
+  done
+  if [[ "${known}" != "yes" ]]; then
+    echo "compress_image: '${ext}' is not in IMAGE_ARTIFACT_SUFFIXES; add it to imghelper" >&2
+    exit 1
+  fi
+
+  case "${ext}" in
+  *lz4)
+    lz4 -9vc "${!input_image}" >"${output_dir}/${!image_name}${ext:+.${ext}}"
+    ;;
+  qcow2)
+    qemu-img convert -f raw -O "${ext}" \
+      "${!input_image}" "${output_dir}/${!image_name}${ext:+.${ext}}"
+    ;;
+  # stream optimization is required for creating Open Virtual Appliances (OVAs)
+  vmdk)
+    qemu-img convert -f raw -O "${ext}" -o subformat=streamOptimized \
+      "${!input_image}" "${output_dir}/${!image_name}${ext:+.${ext}}"
+    ;;
+  *)
+    echo "compress_image: '${ext}' is a known artifact suffix but has no compressor case" >&2
+    exit 1
+    ;;
+  esac
+}
+
+symlink_image() {
+  local ext what target output_dir symlink_prefix version_id symlink_suffix
+  ext="$1"
+  what="${2:?}"
+  output_dir="${3:?}"
+
+  symlink_prefix="${SYMLINK_PREFIX}"
+  version_id="${VERSION_ID:?}"
+
+  ext="${ext:+.$ext}"
+  target="${what^^}_NAME"
+
+  case "${what}" in
+  os_image) symlink_suffix="" ;;
+  data_image) symlink_suffix="${DATA_IMAGE_SUFFIX}" ;;
+  boot_image) symlink_suffix="${BOOT_IMAGE_SUFFIX}" ;;
+  verity_image) symlink_suffix="${VERITY_IMAGE_SUFFIX}" ;;
+  root_image) symlink_suffix="${ROOT_IMAGE_SUFFIX}" ;;
+  *)
+    echo "unknown image '${what}'" >&2
+    exit 1
+    ;;
+  esac
+
+  local symlink="${symlink_prefix}${symlink_suffix}"
+  local versioned_symlink="${symlink_prefix}-${version_id}${symlink_suffix}"
+  local friendly_versioned_symlink="${symlink_prefix}-v${version_id}${symlink_suffix}"
+
+  for link in symlink versioned_symlink friendly_versioned_symlink; do
+    ln -sf "${!target}${ext}" "${output_dir}/${!link}${ext}"
+  done
+}
+
+stage_images() {
+  local input_dir output_fmt
+  local -n os_image data_image
+  input_dir="${1:?}"
+  output_fmt="${2:?}"
+  os_image="${3:?}"
+  data_image="${4:?}"
+
+  local friendly_prefix
+  friendly_prefix="${IMAGE_NAME:?}-${VARIANT:?}-${ARCH:?}-v${VERSION_ID:?}"
+
+  os_image="$(pwd)/${OS_IMAGE_NAME}.img"
+  case "${output_fmt}" in
+  raw)
+    decompress_image "img.lz4" "os_image" "${input_dir}"
+    data_image="${input_dir}/${DATA_IMAGE_NAME}.img.lz4"
+    ;;
+  qcow2)
+    decompress_image "qcow2" "os_image" "${input_dir}"
+    data_image="${input_dir}/${DATA_IMAGE_NAME}.qcow2"
+    ;;
+  vmdk)
+    tar xvf \
+      "${input_dir}/${friendly_prefix}.ova" \
+      "*.vmdk"
+    decompress_image "vmdk" "os_image" "$(pwd)"
+    mv "${OS_IMAGE_NAME}.vmdk" "${OS_IMAGE_NAME}.vmdk.orig"
+    data_image="${input_dir}/${DATA_IMAGE_NAME}.vmdk"
+    ;;
+  *)
+    echo "unexpected output format: ${output_fmt}" >&2
+    exit 1
+    ;;
+  esac
+
+  sgdisk -v "${os_image}"
+}
+
+install_ca_certs() {
+  local root_mount
+  root_mount="${1:?}"
+
+  local ca_certs_default_bundle="/usr/share/bottlerocket/ca-certificates/ca-bundle.crt"
+
+  local ca_certs_bundle="${HOME}/certs/ca-bundle.crt"
+  local ca_certs_installdir="/usr/share/factory/etc/pki/tls/certs"
+
+  install -d "${root_mount}${ca_certs_installdir}"
+  if [[ -f "${ca_certs_bundle}" ]]; then
+    install -p -m 0644 \
+      "${ca_certs_bundle}" \
+      "${root_mount}${ca_certs_installdir}"
+  elif [[ -f "${ca_certs_default_bundle}" ]]; then
+    install -p -m 0644 \
+      "${ca_certs_default_bundle}" \
+      "${root_mount}${ca_certs_installdir}"
+  else
+    echo "no CA certificates found" >&2
+    exit 1
+  fi
+
+  openssl verify \
+    "${root_mount}${ca_certs_installdir}/ca-bundle.crt" >/dev/null
+}
+
+install_root_json() {
+  local root_mount
+  root_mount="${1:?}"
+
+  local root_json_install_dir="/usr/share/updog"
+  install -d "${root_mount}${root_json_install_dir}"
+  install -p -m 0644 \
+    "${HOME}/roles/root.json" \
+    "${root_mount}${root_json_install_dir}"
+
+  jq -e . "${root_mount}${root_json_install_dir}/root.json" >/dev/null
+}
+
+# shim expects the following data structure in `.vendor_cert`:
+#
+# struct {
+#   uint32_t vendor_authorized_size;
+#   uint32_t vendor_deauthorized_size;
+#   uint32_t vendor_authorized_offset;
+#   uint32_t vendor_deauthorized_offset;
+# } cert_table;
+#
+cert_table() {
+  local input output size offset uint32_t
+  input="${1:?}"
+  output="${2:?}"
+  size="$(stat -c %s "${input}")"
+  rm -f "${output}"
+  # The cert payload is offset by four 4-byte uint32_t values in the header.
+  offset="$((4 * 4))"
+  for n in "${size}" 0 "${offset}" "$((size + offset))"; do
+    printf -v uint32_t '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $((n & 255)) $((n >> 8 & 255)) $((n >> 16 & 255)) $((n >> 24 & 255))
+    # shellcheck disable=SC2059 # Variable contains a pattern.
+    printf "${uint32_t}" >>"${output}"
+  done
+  cat "${input}" >>"${output}"
+  # Zero-pad the output to the expected section size. Otherwise a subsequent
+  # `objcopy` operation on the same section might fail to replace it, if the
+  # new vendor certificate is larger than this one.
+  truncate -s 4096 "${output}"
+}
+
+# Helper functions to log the object layout before and after changes.
+aarch64-objdumpcopy() {
+  local obj
+  obj="${1:?}"
+  aarch64-bottlerocket-linux-gnu-objdump -h "${obj}"
+  aarch64-bottlerocket-linux-gnu-objcopy "${@}" "${obj}"
+  aarch64-bottlerocket-linux-gnu-objdump -h "${obj}"
+}
+
+x86_64-objdumpcopy() {
+  local obj
+  obj="${1:?}"
+  x86_64-bottlerocket-linux-gnu-objdump -h "${obj}"
+  x86_64-bottlerocket-linux-gnu-objcopy "${@}" "${obj}"
+  x86_64-bottlerocket-linux-gnu-objdump -h "${obj}"
+}
+
+mkfs_data_ext4() {
+  local target size offset bottlerocket_data data_mount unlabeled
+  target="${1:?}"
+  size="${2:?}"
+  offset="${3:?}"
+  bottlerocket_data="${4:?}"
+  data_mount="${5:?}"
+  unlabeled="${6:?}"
+  echo "writing ext4 filesystem for DATA"
+  mkfs.ext4 -m 0 -d "${data_mount}" "${bottlerocket_data}" "${size}"
+  echo "${unlabeled}" | debugfs -w -f - "${bottlerocket_data}"
+  dd if="${bottlerocket_data}" of="${target}" conv=notrunc bs=1M seek="${offset}"
+}
+
+mkfs_data_xfs() {
+  local target size offset bottlerocket_data data_mount unlabeled
+  target="${1:?}"
+  size="${2:?}"
+  offset="${3:?}"
+  bottlerocket_data="${4:?}"
+  data_mount="${5:?}"
+  unlabeled="${6:?}"
+  echo "writing blank partition for DATA"
+  # Create a file to write the filesystem to first
+  dd if=/dev/zero of="${bottlerocket_data}" bs=1M count="${size%?}"
+  dd if="${bottlerocket_data}" of="${target}" conv=notrunc bs=1M seek="${offset}"
+}
+
+mkfs_root_erofs() {
+  local root_mount root_image selinux_file_contexts
+  root_mount="${1:?}"
+  root_image="${2:?}"
+  selinux_file_contexts="${3:?}"
+  # Ensure the root mount directory is not writable, to avoid permission errors
+  # when interacting with the root inode at runtime.
+  chmod 555 "${root_mount}"
+  # mkfs.erofs optimizations:
+  #  --all-root: use same UID/GID for all files
+  #          -T: use same mtime for all files
+  # -z lz4hc,12: lz4 for fast decompression, lz4hc level 12 for max compression
+  #   -C 262144: use physical clusters up to 256 KiB to align with EBS I/O size
+  mkfs.erofs \
+    --file-contexts="${selinux_file_contexts}" \
+    --all-root \
+    -T "$(stat -c '%Y' "${root_mount}/root")" \
+    -z lz4hc,12 \
+    -C 262144 \
+    "${root_image}" "${root_mount}"
+}
+
+check_image_size() {
+  local image part_mib image_size part_bytes
+  image="${1:?}"
+  part_mib="${2:?}"
+  image_size="$(stat -c %s "${image}")"
+  part_bytes="$((part_mib * 1024 * 1024))"
+  if [[ "${image_size}" -gt "${part_bytes}" ]]; then
+    echo "${image##*/} content is larger than partition (${part_mib}M)" >&2
+    exit 1
+  fi
+}
+
+get_ext4_usage() {
+  local image_file partition_name
+  local fs_info block_count free_blocks block_size
+  local used_blocks used_bytes total_bytes bytes_remaining percentage_bytes
+  image_file="${1:?}"
+  partition_name="${2:?}"
+
+  fs_info="$(dumpe2fs -h "${image_file}" 2>/dev/null)"
+  block_count="$(echo "${fs_info}" | grep "^Block count:" | awk '{print $3}')"
+  free_blocks="$(echo "${fs_info}" | grep "^Free blocks:" | awk '{print $3}')"
+  block_size="$(echo "${fs_info}" | grep "^Block size:" | awk '{print $3}')"
+
+  used_blocks="$((block_count - free_blocks))"
+  used_bytes="$((used_blocks * block_size))"
+  total_bytes="$((block_count * block_size))"
+  bytes_remaining="$((free_blocks * block_size))"
+  percentage_bytes="$((used_bytes * 100 / total_bytes))"
+
+  jq -n \
+    --arg partition "${partition_name}" \
+    --argjson bytes_total "${total_bytes}" \
+    --argjson bytes_used "${used_bytes}" \
+    --argjson bytes_remaining "${bytes_remaining}" \
+    --argjson percentage_bytes "${percentage_bytes}" \
+    '{($partition): {bytes_total: $bytes_total, bytes_used: $bytes_used, bytes_remaining: $bytes_remaining, percentage_bytes: $percentage_bytes}}'
+}
+
+get_erofs_usage() {
+  local image_file partition_name partition_size_mib
+  local used_bytes total_bytes bytes_remaining percentage_bytes
+  image_file="${1:?}"
+  partition_name="${2:?}"
+  partition_size_mib="${3:?}"
+
+  used_bytes="$(stat -c %s "${image_file}")"
+  total_bytes="$((partition_size_mib * 1024 * 1024))"
+  bytes_remaining="$((total_bytes - used_bytes))"
+  percentage_bytes="$((used_bytes * 100 / total_bytes))"
+
+  jq -n \
+    --arg partition "${partition_name}" \
+    --argjson bytes_total "${total_bytes}" \
+    --argjson bytes_used "${used_bytes}" \
+    --argjson bytes_remaining "${bytes_remaining}" \
+    --argjson percentage_bytes "${percentage_bytes}" \
+    '{($partition): {bytes_total: $bytes_total, bytes_used: $bytes_used, bytes_remaining: $bytes_remaining, percentage_bytes: $percentage_bytes}}'
+}
+
+generate_verity_root() {
+  local root_image verity_image veritypart_mib
+  local -n dm_verity_root
+  root_image="${1:?}"
+  verity_image="${2:?}"
+  veritypart_mib="${3:?}"
+  dm_verity_root="${4:?}"
+
+  truncate -s "${veritypart_mib}M" "${verity_image}"
+
+  local veritysetup_output
+  veritysetup_output="$(veritysetup format \
+    --format "${VERITY_VERSION}" \
+    --hash "${VERITY_HASH_ALGORITHM}" \
+    --data-block-size "${VERITY_DATA_BLOCK_SIZE}" \
+    --hash-block-size "${VERITY_HASH_BLOCK_SIZE}" \
+    "${root_image}" "${verity_image}" |
+    tee /dev/stderr)"
+
+  check_image_size "${verity_image}" "${veritypart_mib}"
+
+  local verity_data_4k_blocks verity_data_512b_blocks
+  verity_data_4k_blocks="$(grep '^Data blocks:' <<<"${veritysetup_output}" | awk '{ print $NF }')"
+  verity_data_512b_blocks="$((verity_data_4k_blocks * 8))"
+
+  local verity_root_hash verity_salt
+  verity_root_hash="$(grep '^Root hash:' <<<"${veritysetup_output}" | awk '{ print $NF }')"
+  verity_salt="$(grep '^Salt:' <<<"${veritysetup_output}" | awk '{ print $NF }')"
+
+  veritysetup verify "${root_image}" "${verity_image}" "${verity_root_hash}"
+
+  dm_verity_root=(
+    "root,,,ro,0"
+    "${verity_data_512b_blocks}"
+    "verity"
+    "${VERITY_VERSION}"
+    "PARTUUID=\$boot_uuid/PARTNROFF=1"
+    "PARTUUID=\$boot_uuid/PARTNROFF=2"
+    "${VERITY_DATA_BLOCK_SIZE}"
+    "${VERITY_HASH_BLOCK_SIZE}"
+    "${verity_data_4k_blocks}"
+    "1"
+    "${VERITY_HASH_ALGORITHM}"
+    "${verity_root_hash}"
+    "${verity_salt}"
+    "2"
+    "restart_on_corruption"
+    "ignore_zero_blocks"
+  )
+}
+
+sbsetup_wrapup() {
+  local sb_key_source
+  sb_key_source="${1:?}"
+
+  # Convert certificates from PEM format (ASCII) to DER (binary). This could be
+  # done when the certificates are created, but the resulting binary files are
+  # not as nice to store in source control.
+  for cert in PK KEK db vendor; do
+    openssl x509 \
+      -inform PEM -in "${SBKEYS}/${cert}.crt" \
+      -outform DER -out "${SBKEYS}/${cert}.cer"
+  done
+
+  # For signing the grub config, we need to embed the GPG public key in binary
+  # form, which is similarly awkward to store in source control.
+  gpg --batch --no-tty --import "${SBKEYS}/config-sign.key"
+  if [[ "${sb_key_source}" == "aws" ]]; then
+    gpg --batch --no-tty --card-status
+  fi
+  gpg --batch --no-tty --export >"${SBKEYS}/config-sign.pubkey"
+  gpg --batch --no-tty --list-keys
+}
+
+sbsetup_aws_profile() {
+  # Use the CA bundle override as the AWS CA cert bundle, if present.
+  if [[ -s "/root/certs/ca-bundle.crt" ]]; then
+    cp /root/certs/ca-bundle.crt /etc/pki/tls/cert.pem
+    export AWS_CA_BUNDLE=/etc/pki/tls/cert.pem
+  fi
+  # Set AWS environment variables from build secrets, if present.
+  local var val
+  for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+    val="${var,,}"
+    val="${HOME}/.aws/${val//_/-}.env"
+    [[ -s "${val}" ]] || continue
+    declare -g -x "${var}=$(cat "${val}")"
+  done
+  # Verify that AWS credentials are functional.
+  aws sts get-caller-identity
+  # Log all PKCS11 helper activity, to simplify debugging.
+  export AWS_KMS_PKCS11_DEBUG=1
+  SHIM_SIGN_KEY+=(-c shim-sign-key -t shim-sign-key)
+  CODE_SIGN_KEY+=(-c code-sign-key -t code-sign-key)
+
+  local sb_key_source="aws"
+  sbsetup_wrapup "${sb_key_source}"
+}
+
+sbsetup_local_profile() {
+  # Disable the PKCS11 helper.
+  rm /etc/pkcs11/modules/aws-kms-pkcs11.module
+
+  # Generate the PKCS12 archives for import.
+  openssl pkcs12 \
+    -export \
+    -passout pass: \
+    -inkey "${SBKEYS}/shim-sign.key" \
+    -in "${SBKEYS}/shim-sign.crt" \
+    -certfile "${SBKEYS}/db.crt" \
+    -out "${SBKEYS}/shim-sign.p12"
+
+  openssl pkcs12 \
+    -export \
+    -passout pass: \
+    -inkey "${SBKEYS}/code-sign.key" \
+    -in "${SBKEYS}/code-sign.crt" \
+    -certfile "${SBKEYS}/vendor.crt" \
+    -out "${SBKEYS}/code-sign.p12"
+
+  # Import certificates and private key archive.
+  local pedb="/etc/pki/pesign"
+
+  certutil -d "${pedb}" -A -n db -i "${SBKEYS}/db.crt" -t ",,C"
+  certutil -d "${pedb}" -A -n shim-sign-key -i "${SBKEYS}/shim-sign.crt" -t ",,P"
+  pk12util -d "${pedb}" -i "${SBKEYS}/shim-sign.p12" -W ""
+
+  certutil -d "${pedb}" -A -n vendor -i "${SBKEYS}/vendor.crt" -t ",,C"
+  certutil -d "${pedb}" -A -n code-sign-key -i "${SBKEYS}/code-sign.crt" -t ",,P"
+  pk12util -d "${pedb}" -i "${SBKEYS}/code-sign.p12" -W ""
+
+  certutil -d "${pedb}" -L
+  SHIM_SIGN_KEY+=(-c shim-sign-key)
+  CODE_SIGN_KEY+=(-c code-sign-key)
+
+  local sb_key_source="local"
+  sbsetup_wrapup "${sb_key_source}"
+}
+
+sbsetup_signing_profile() {
+  if [[ -s "${HOME}/.config/aws-kms-pkcs11/config.json" ]]; then
+    sbsetup_aws_profile
+  else
+    sbsetup_local_profile
+  fi
+}
+
+undo_sign() {
+  local what
+  what="${1:?}"
+  # shellcheck disable=SC2076 # literal match is intended.
+  if [[ ! "$(pesign -i "${what}" -l)" =~ 'No signatures found.' ]]; then
+    mv "${what}" "${what}.orig"
+    pesign -i "${what}.orig" -o "${what}" -u 0 -r
+    rm "${what}.orig"
+  fi
+}
+
+do_sign() {
+  local what cert
+  local -n sign_key
+  what="${1:?}"
+  cert="${2:?}"
+  sign_key="${3:?}"
+
+  pesign -i "${what}" -o "${what}.signed" -s "${sign_key[@]}"
+  mv "${what}.signed" "${what}"
+  pesign -i "${what}" -l
+  pesigcheck -i "${what}" -n 0 -c "${cert}"
+}
+
+sign_shim() {
+  local shim
+  shim="${1:?}"
+
+  # Convert the vendor certificate to the expected format.
+  cert_table "${SBKEYS}/vendor.cer" "${SBKEYS}/vendor.obj"
+
+  # Replace the embedded vendor certificate, then sign shim with the db key.
+  undo_sign "${shim}"
+  "${ARCH:?}-objdumpcopy" "${shim}" \
+    --update-section ".vendor_cert=${SBKEYS}/vendor.obj"
+  do_sign "${shim}" "${SBKEYS}/db.cer" SHIM_SIGN_KEY
+}
+
+zero_shim() {
+  local shim
+  shim="${1:?}"
+
+  # Generate a zero-sized certificate in the expected format.
+  cert_table /dev/null "${SBKEYS}/vendor.obj"
+
+  # Replace the embedded vendor certificate with the zero-sized one, which
+  # shim will ignore when Secure Boot is disabled.
+  "${ARCH:?}-objdumpcopy" "${shim}" \
+    --update-section ".vendor_cert=${SBKEYS}/vendor.obj"
+}
+
+sign_mokm() {
+  local mokm
+  mokm="${1:?}"
+
+  undo_sign "${mokm}"
+  do_sign "${mokm}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+}
+
+sign_grub() {
+  local grub
+  grub="${1:?}"
+
+  # Remove the original vendor key if necessary, replace the embedded gpg
+  # public key, then sign grub with the vendor key.
+  undo_sign "${grub}"
+  "${ARCH:?}-objdumpcopy" "${grub}" \
+    --file-alignment 4096 \
+    --update-section ".pubkey=${SBKEYS}/config-sign.pubkey"
+  do_sign "${grub}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+}
+
+unembed_grub() {
+  local grub
+  grub="${1:?}"
+
+  # Remove the embedded gpg public key to disable GRUB's signature checks.
+  "${ARCH:?}-objdumpcopy" "${grub}" \
+    --file-alignment 4096 \
+    --remove-section ".pubkey"
+}
+
+provide_certs() {
+  local efi_image
+  efi_image="${1:?}"
+  mcopy -i "${efi_image}" -ov "${SBKEYS}"/db.{crt,cer} ::/EFI/BOOT
+}
+
+sign_vmlinuz() {
+  local vmlinuz
+  vmlinuz="${1:?}"
+
+  undo_sign "${vmlinuz}"
+  do_sign "${vmlinuz}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+}
+
+generate_hmac() {
+  local vmlinuz
+  vmlinuz="${1:?}"
+  openssl sha512 -hmac FIPS-FTW-RHT2009 -hex "${vmlinuz}" |
+    awk '{ print $2 "  vmlinuz" }' \
+      >"${vmlinuz%/*}/.${vmlinuz##*/}.hmac"
+}
+
+sign_grubcfg() {
+  local grub_cfg grub_cfg_sig
+  grub_cfg="${1:?}"
+  grub_cfg_sig="${grub_cfg}.sig"
+  [[ -f "${grub_cfg_sig}" ]] && rm "${grub_cfg_sig}"
+  gpg --batch --no-tty --detach-sign "${grub_cfg}"
+  gpg --batch --no-tty --verify "${grub_cfg_sig}" "${grub_cfg}"
+}
+
+generate_ova() {
+  local os_vmdk data_vmdk
+  os_vmdk="${1:?}"
+  data_vmdk="${2:?}"
+
+  local os_image_publish_size_gib data_image_publish_size_gib
+  os_image_publish_size_gib="${3:?}"
+  data_image_publish_size_gib="${4:?}"
+
+  local ovf_template uefi_secure_boot output_dir
+  ovf_template="${5:?}"
+  uefi_secure_boot="${6:?}"
+  output_dir="${7:?}"
+
+  local ova_dir
+  ova_dir="$(mktemp -d)"
+
+  local file_prefix="${os_vmdk%.vmdk}"
+  local ovf="${file_prefix}.ovf"
+
+  # The manifest expects disk sizes in bytes.
+  local bytes_in_gib os_disk_bytes data_disk_bytes
+  bytes_in_gib="$((1024 * 1024 * 1024))"
+  os_disk_bytes="$((os_image_publish_size_gib * bytes_in_gib))"
+  data_disk_bytes="$((data_image_publish_size_gib * bytes_in_gib))"
+  sed "${ovf_template}" \
+    -e "s/{{OS_DISK}}/${os_vmdk}/g" \
+    -e "s/{{DATA_DISK}}/${data_vmdk}/g" \
+    -e "s/{{OS_DISK_BYTES}}/${os_disk_bytes}/g" \
+    -e "s/{{DATA_DISK_BYTES}}/${data_disk_bytes}/g" \
+    >"${ova_dir}/${ovf}"
+
+  # The manifest templates for Secure Boot expect the cert data for
+  # PK, KEK, db, and dbx.
+  if [[ "${uefi_secure_boot}" == "yes" ]]; then
+    local data_disk_bytes kek_cert_der_hex db_cert_der_hex dbx_empty_hash_hex
+    pk_cert_der_hex="$(hexdump -ve '1/1 "%02x"' "${SBKEYS}/PK.cer")"
+    kek_cert_der_hex="$(hexdump -ve '1/1 "%02x"' "${SBKEYS}/KEK.cer")"
+    db_cert_der_hex="$(hexdump -ve '1/1 "%02x"' "${SBKEYS}/db.cer")"
+    dbx_empty_hash_hex="$(sha256sum /dev/null | awk '{ print $1 }')"
+    sed -i \
+      -e "s/{{PK_CERT_DER_HEX}}/${pk_cert_der_hex}/g" \
+      -e "s/{{KEK_CERT_DER_HEX}}/${kek_cert_der_hex}/g" \
+      -e "s/{{DB_CERT_DER_HEX}}/${db_cert_der_hex}/g" \
+      -e "s/{{DBX_EMPTY_HASH_HEX}}/${dbx_empty_hash_hex}/g" \
+      "${ova_dir}/${ovf}"
+  fi
+
+  # Make sure we replaced all the '{{...}}' fields with real values.
+  if grep -F -e '{{' -e '}}' "${ova_dir}/${ovf}"; then
+    echo "Failed to fully render the OVF template" >&2
+    exit 1
+  fi
+
+  # Create the manifest file with the hashes of the VMDKs and the OVF.
+  local os_sha256 data_sha256 ovf_sha256
+  local manifest="${file_prefix}.mf"
+  pushd "${output_dir}" >/dev/null || exit 1
+  os_sha256="$(sha256sum "${os_vmdk}" | awk '{print $1}')"
+  echo "SHA256(${os_vmdk})= ${os_sha256}" >"${ova_dir}/${manifest}"
+  if [[ -s "${data_vmdk}" ]]; then
+    data_sha256="$(sha256sum "${data_vmdk}" | awk '{print $1}')"
+    echo "SHA256(${data_vmdk})= ${data_sha256}" >>"${ova_dir}/${manifest}"
+  fi
+  popd >/dev/null || exit 1
+  pushd "${ova_dir}" >/dev/null || exit 1
+  ovf_sha256="$(sha256sum "${ovf}" | awk '{print $1}')"
+  echo "SHA256(${ovf})= ${ovf_sha256}" >>"${manifest}"
+  popd >/dev/null || exit 1
+
+  # According to the OVF spec:
+  # https://www.dmtf.org/sites/default/files/standards/documents/DSP0243_2.1.1.pdf,
+  # the OVF must be first in the tar bundle. Manifest is next, and then the
+  # files must fall in the same order as listed in the References section of
+  # the OVF file
+  local ova="${file_prefix}.ova"
+  tar -cf "${output_dir}/${ova}" -C "${ova_dir}" "${ovf}" "${manifest}"
+  tar -rf "${output_dir}/${ova}" -C "${output_dir}" "${os_vmdk}"
+  if [[ -s "${data_vmdk}" ]]; then
+    tar -rf "${output_dir}/${ova}" -C "${output_dir}" "${data_vmdk}"
+  fi
+
+  rm -rf "${ova_dir}"
+}
+
+# Generate the application inventory JSON that ships in every Bottlerocket
+# image (both disk-based rpm2img builds and EIF rpm2eif builds).
+#
+# Produces two identical files:
+#   * ${install_root}/usr/share/bottlerocket/application-inventory.json
+#     (embedded in the image at the canonical path consumers expect)
+#   * ${output_dir}/application-inventory.json
+#     (side-car in the build output so builders can inspect the inventory
+#     without opening the image)
+#
+# Kits listed under ${external_kits_path}/external-kit-metadata.json rewrite
+# any `bottlerocket-`-prefixed package names to the kit-native names and set
+# the `Publisher` field to the kit's vendor.
+#
+# Args:
+#   $1: install_root       -- root of the installed rootfs (queried with rpm)
+#   $2: package_dir        -- directory of RPMs used to compute expected count
+#   $3: external_kits_path -- directory containing external-kit-metadata.json
+#   $4: arch               -- target architecture (used to locate kit repos)
+#   $5: output_dir         -- build-output directory for the side-car file
+#   $6: install_time       -- timestamp string to embed as `InstalledTime`
+generate_application_inventory() {
+  local install_root package_dir external_kits_path arch output_dir install_time
+  install_root="${1:?install_root required}"
+  package_dir="${2:?package_dir required}"
+  external_kits_path="${3:?external_kits_path required}"
+  arch="${4:?arch required}"
+  output_dir="${5:?output_dir required}"
+  install_time="${6:?install_time required}"
+
+  local INVENTORY_QUERY
+  INVENTORY_QUERY="\{\"Name\":\"%{NAME}\"\
+,\"SourcePackage\":\"%{SOURCERPM}\"\
+,\"Publisher\":\"Bottlerocket\"\
+,\"Version\":\"%{Version}\"\
+,\"Release\":\"%{Release}\"\
+,\"Epoch\":\"%|Epoch?{%{EPOCH}}:{0}|\"\
+,\"InstalledTime\":\"${install_time}\"\
+,\"ApplicationType\":\"%{GROUP}\"\
+,\"Architecture\":\"%{ARCH}\"\
+,\"Url\":\"%{URL}\"\
+,\"Summary\":\"%{Summary}\"\}\n"
+
+  local installed_rpms
+  # shellcheck disable=SC2312 # Array is validated elsewhere.
+  mapfile -t installed_rpms <<<"$(rpm -qa --root "${install_root}" \
+    --queryformat "${INVENTORY_QUERY}")"
+
+  # Wrap installed_rpms mapfile into json.
+  local INVENTORY_DATA
+  INVENTORY_DATA="$(jq --raw-output . <<<"${installed_rpms[@]}")"
+  # Sort by package name and add 'Content' as top-level.
+  INVENTORY_DATA="$(jq --slurp 'sort_by(.Name)' <<<"${INVENTORY_DATA}" | jq '{"Content": .}')"
+
+  local INVENTORY_BEFORE_PARENTS INVENTORY_AFTER_PARENTS ADDED_PARENTS
+  INVENTORY_BEFORE_PARENTS="$(jq '.Content | length' <<<"${INVENTORY_DATA}")"
+  INVENTORY_DATA="$(jq '
+    .Content |= (
+      . + map(
+        (.Version) as $v | (.Release) as $r | (.SourcePackage | sub("-" + $v + "-" + $r + "\\.src\\.rpm$";"")) as $p |
+        . + {Name: $p, Summary: ($p + " (source package)")}
+      )
+      | unique_by(.Name)
+      | map(del(.SourcePackage))
+      | sort_by(.Name)
+    )
+  ' <<<"${INVENTORY_DATA}")"
+
+  INVENTORY_AFTER_PARENTS="$(jq '.Content | length' <<<"${INVENTORY_DATA}")"
+  ADDED_PARENTS=$((INVENTORY_AFTER_PARENTS - INVENTORY_BEFORE_PARENTS))
+
+  # Iterate through all kits used to build this variant.
+  local EXTERNAL_KIT_METADATA_PATH kits kit kit_version kit_vendor kit_path
+  local kit_inventory_query KIT_PKGS kit_list
+  EXTERNAL_KIT_METADATA_PATH="${external_kits_path}/external-kit-metadata.json"
+  mapfile -t kits < <(jq -r ".kit[].name" "${EXTERNAL_KIT_METADATA_PATH}")
+  for kit in "${kits[@]}"; do
+    kit_version=$(jq --arg kit "${kit}" --raw-output '.kit[]|select(.name == $kit)|.version' "${EXTERNAL_KIT_METADATA_PATH}")
+    kit_vendor=$(jq --arg kit "${kit}" --raw-output '.kit[]|select(.name == $kit)|.vendor' "${EXTERNAL_KIT_METADATA_PATH}")
+    if [[ -z "${kit_version}" ]]; then
+        echo "Failed to extract version of kit '${kit}'" >&2
+        exit 1
+    fi
+    if [[ -z "${kit_vendor}" ]]; then
+        echo "Failed to extract vendor of kit '${kit}'" >&2
+        exit 1
+    fi
+
+    # Set the path inside the build container to the kit RPMs and repo.
+    kit_path="${external_kits_path}/${kit_vendor}/${kit}/${arch}"
+
+    # Query the kit repo of RPMs for all package names.
+    kit_inventory_query="%{NAME}\n"
+    # shellcheck disable=SC2312 # Array is validated elsewhere.
+    mapfile -t KIT_PKGS <<<"$(dnf -q --repofrompath \
+      kit,file://"${kit_path}" \
+      --repo=kit repoquery \
+      --queryformat "${kit_inventory_query}" | grep -v "^$")"
+    # Convert the bash array of kit packages to a JSON array.
+    kit_list="$(\
+      jq \
+        --null-input \
+        --compact-output \
+        '$ARGS.positional // []' \
+        --args "${KIT_PKGS[@]}")"
+
+    # Convert the JSON array to a map of 'bottlerocket-' prefixed names to unprefixed package names
+    # for search and replace in the installed application inventory.
+    jq \
+      --compact-output \
+      'map({ (.|tostring): (.|sub("^bottlerocket-";""))}) | add' <<<"${kit_list}" \
+      > kit-replacements.json
+
+    # For any packages in the installed app inventory that came from the kit, replace
+    # the Publisher with the kit's vendor and replace the name with the unprefixed name.
+    INVENTORY_DATA="$(jq \
+      --slurpfile replace kit-replacements.json \
+      --arg KIT "${kit}" \
+      '(.Content[] | select(.Name | $replace[][.] != null) | .Publisher) = $KIT |
+        .Content[].Name |= (if $replace[][.] then $replace[][.] else . end)' \
+      <<<"${INVENTORY_DATA}")"
+  done
+
+  # Verify we successfully inventoried some RPMs.
+  local INVENTORY_COUNT RPM_COUNT
+  INVENTORY_COUNT="$(jq '.Content | length' <<<"${INVENTORY_DATA}")"
+  RPM_COUNT="$(find "${package_dir}" -maxdepth 1 -type f -name '*.rpm' | wc -l)"
+  if [[ "${INVENTORY_COUNT}" -ne "$((RPM_COUNT + ADDED_PARENTS))" ]]; then
+    echo "Inventory of RPMs does not match what was expected: '${INVENTORY_COUNT}/$((RPM_COUNT + ADDED_PARENTS))'" >&2
+    exit 1
+  fi
+  if grep -q "bottlerocket-release" <<<"${INVENTORY_DATA}"; then
+    echo "Inventory of RPMs includes packages prefixed with 'bottlerocket-'" >&2
+    exit 1
+  fi
+
+  # Write the inventory into the rootfs so it ends up inside the image, and
+  # also into the output directory so builders can consume it without opening
+  # the image.
+  mkdir -p "${install_root}/usr/share/bottlerocket"
+  printf "%s\n" "${INVENTORY_DATA}" >"${install_root}/usr/share/bottlerocket/application-inventory.json"
+  printf "%s\n" "${INVENTORY_DATA}" >"${output_dir}/application-inventory.json"
+}

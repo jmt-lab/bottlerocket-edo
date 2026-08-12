@@ -1,8 +1,6 @@
-use crate::source::{KitImageSource, KitImageVendor};
-use crate::transform::{
-    KitTransform, PackageBuildTransform, VariantDiskTransform, VariantGrubTransform,
-    VariantImageTransform, VariantRootfsTransform,
-};
+use crate::kit::{KitImageSource, KitImageVendor, KitTransform};
+use crate::rpm::{PackageBuildTransform};
+use crate::variant::{RepoTransform, RPM2ImageTransform};
 use edo::{
     context::{Context, FromElement},
     source::{Source, Vendor},
@@ -11,9 +9,10 @@ use edo::{
 use std::sync::Arc;
 
 pub mod config;
-pub mod image;
-pub mod source;
-pub mod transform;
+pub mod kit;
+pub mod rpm;
+pub mod variant;
+pub mod model;
 
 pub fn register(ctx: &Context) {
     let registry = ctx.registry();
@@ -35,26 +34,10 @@ pub fn register(ctx: &Context) {
     // `crates/twoliter/src/transform/variant/mod.rs` for the
     // dependency chain and hash-input decomposition.
     registry.register_transform(
-        "variant-rootfs",
+        "variant-repo",
         Arc::new(async |element, ctx| {
             Ok(Transform::new(
-                VariantRootfsTransform::new(&element, &ctx).await?,
-            ))
-        }),
-    );
-    registry.register_transform(
-        "variant-disk",
-        Arc::new(async |element, ctx| {
-            Ok(Transform::new(
-                VariantDiskTransform::new(&element, &ctx).await?,
-            ))
-        }),
-    );
-    registry.register_transform(
-        "variant-grub",
-        Arc::new(async |element, ctx| {
-            Ok(Transform::new(
-                VariantGrubTransform::new(&element, &ctx).await?,
+                RepoTransform::new(&element, &ctx).await?,
             ))
         }),
     );
@@ -62,7 +45,7 @@ pub fn register(ctx: &Context) {
         "variant-image",
         Arc::new(async |element, ctx| {
             Ok(Transform::new(
-                VariantImageTransform::new(&element, &ctx).await?,
+                RPM2ImageTransform::new(&element, &ctx).await?,
             ))
         }),
     );

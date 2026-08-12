@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/twoliter"]
+members = [
+    "crates/error-utils",
+    "crates/pubsys-config",
+    "crates/twoliter",
+]
 resolver = "2"
 
 [workspace.dependencies]

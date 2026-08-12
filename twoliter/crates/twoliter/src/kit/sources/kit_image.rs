@@ -392,7 +392,7 @@ pub mod error {
         Io { source: std::io::Error },
         #[snafu(display(
             "kit image at {uri} is missing the '{}' label",
-            crate::source::kit_image::KIT_METADATA_LABEL
+            crate::kit::KIT_METADATA_LABEL
         ))]
         MissingMetadata { uri: String },
         #[snafu(display("kit image at {uri} has no manifest for platform {platform}"))]
