@@ -312,9 +312,13 @@ if [[ ${#sbom_rpms[@]} -gt 1 ]]; then
   ln -rs "${usr_dir}" "${SBOM_MOUNT}/usr"
 fi
 
-# Generate SBOM for variant RPMs
+# Generate SBOM for variant RPMs. Isolate the top-level `*.rpm` files
+# so sbomtool doesn't descend into `sbom-rpms/` and catalog the
+# upstream source content those subpackages carry.
 RPM_SBOM_DIR=$(mktemp -d)
-sbomtool generate --name variant-rpms --build-dir "${PACKAGE_DIR}" --out-dir "${RPM_SBOM_DIR}" --spdx --cyclonedx
+RPM_ONLY_DIR=$(mktemp -d)
+find "${PACKAGE_DIR}" -maxdepth 1 -type f -name '*.rpm' -exec ln -s -t "${RPM_ONLY_DIR}" '{}' +
+sbomtool generate --name variant-rpms --build-dir "${RPM_ONLY_DIR}" --out-dir "${RPM_SBOM_DIR}" --spdx --cyclonedx
 
 # Merge SBOMs into a single json file
 KIT_SBOMS_DIR="${SBOM_MOUNT}/usr/share/sboms"

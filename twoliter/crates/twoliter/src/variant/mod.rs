@@ -2,6 +2,7 @@ mod disk;
 mod features;
 mod image;
 mod options;
+pub mod publish;
 mod repo;
 mod rpm2img;
 mod variant;

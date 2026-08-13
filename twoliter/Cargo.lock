@@ -48,6 +48,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "amispec"
+version = "0.1.0"
+dependencies = [
+ "aws-sdk-ec2",
+ "bounded-integer",
+ "num-traits",
+ "serde",
+ "serde_plain",
+ "snafu",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1112,6 +1125,16 @@ dependencies = [
  "quote",
  "rustversion",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "bounded-integer"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "102dbef1187b1893e6dfe05a774e79fd52265f49f214f6879c8ff49f52c8188b"
+dependencies = [
+ "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -5530,6 +5553,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "twoliter"
 version = "0.1.0"
 dependencies = [
+ "amispec",
  "astral-tokio-tar",
  "async-compression",
  "async-trait",
@@ -5550,7 +5574,9 @@ dependencies = [
  "edo-core",
  "error-utils",
  "futures",
+ "handlebars",
  "indexmap",
+ "indicatif",
  "jiff",
  "nutype",
  "ocilot",
@@ -5563,6 +5589,7 @@ dependencies = [
  "serde_plain",
  "sha2 0.11.0",
  "snafu",
+ "tempfile",
  "test-case",
  "tokio",
  "tokio-stream",

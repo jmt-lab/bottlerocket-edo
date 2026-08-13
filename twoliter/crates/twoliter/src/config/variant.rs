@@ -427,8 +427,82 @@ impl Variant {
         // we always emit the (possibly empty) table so the transform
         // side gets a definite value rather than falling back to
         // struct defaults.
-        image.insert("features".to_string(), json!(&self.image.features));
+        //
+        // Apply old-twoliter's silent-default semantics
+        // (`tools/buildsys/src/manifest.rs::ManifestInfo::image_features`):
+        // for a full Bottlerocket image (neither `standalone-image` nor
+        // `image-format = "eif"`), `in-place-updates`, `host-containers`,
+        // and `external-kmod-development` default to on unless the
+        // variant explicitly disables them. The stripped-down build
+        // (standalone-image or EIF) instead defaults to `standalone-image`
+        // + `external-kmod-development` only. Without this, a variant
+        // that omits `in-place-updates` from `[variant.image.features]`
+        // ends up with the metadata RPM providing
+        // `image-feature(no-in-place-updates)`, which suppresses the
+        // core-kit's `bork` dependency in `packages/os/os.spec`
+        // (`Requires: (bork or image-feature(no-in-place-updates))`).
+        // `bork` then never lands in the image, `sundog` at first boot
+        // fails `bork seed`, and `preconfigured.target` collapses.
+        image.insert("features".to_string(), json!(&self.resolved_features()));
         Value::Object(image)
+    }
+
+    /// Compute the effective image-feature map that should be shipped
+    /// on the wire, applying old-twoliter's silent-default seeding.
+    ///
+    /// Rules (matching upstream `buildsys::manifest::ManifestInfo::image_features`):
+    ///
+    /// - Base seed = `{in-place-updates, host-containers,
+    ///   external-kmod-development}` for a full image, or
+    ///   `{standalone-image, external-kmod-development}` when the user
+    ///   set `standalone-image = true` **or** picked
+    ///   `image-format = "eif"` (EIF is inherently a stripped-down
+    ///   single-bank image).
+    /// - Explicit entries in `[variant.image.features]` override the
+    ///   seed: `true` inserts, `false` removes.
+    ///
+    /// The output is a `BTreeMap<String, bool>` with `true` for every
+    /// resolved-enabled feature — matching the wire shape emitted
+    /// before this change (an all-`true` table). Features that end up
+    /// disabled are omitted rather than emitted as `false`; the
+    /// transform side treats missing entries as `false`, so the two
+    /// encodings are equivalent.
+    fn resolved_features(&self) -> BTreeMap<String, bool> {
+        // Feature names we might seed. Kept as strings because
+        // `VariantImageBlock::features` is `BTreeMap<String, bool>`
+        // (the transform side is the only consumer of the strongly
+        // typed `ImageFeature` enum).
+        const IN_PLACE_UPDATES: &str = "in-place-updates";
+        const HOST_CONTAINERS: &str = "host-containers";
+        const EXTERNAL_KMOD_DEVELOPMENT: &str = "external-kmod-development";
+        const STANDALONE_IMAGE: &str = "standalone-image";
+
+        let standalone_explicit = self
+            .image
+            .features
+            .get(STANDALONE_IMAGE)
+            .copied()
+            .unwrap_or(false);
+        let is_eif = matches!(&self.image.format, Some(ImageFormat::Eif));
+        let stripped = standalone_explicit || is_eif;
+
+        let mut resolved: BTreeMap<String, bool> = BTreeMap::new();
+        if stripped {
+            resolved.insert(STANDALONE_IMAGE.to_string(), true);
+            resolved.insert(EXTERNAL_KMOD_DEVELOPMENT.to_string(), true);
+        } else {
+            resolved.insert(IN_PLACE_UPDATES.to_string(), true);
+            resolved.insert(HOST_CONTAINERS.to_string(), true);
+            resolved.insert(EXTERNAL_KMOD_DEVELOPMENT.to_string(), true);
+        }
+        for (feature, flag) in &self.image.features {
+            if *flag {
+                resolved.insert(feature.clone(), true);
+            } else {
+                resolved.remove(feature);
+            }
+        }
+        resolved
     }
 
     /// Compose the `[os]` sub-block matching `variant::OsOptions`.
@@ -1011,6 +1085,177 @@ kernel-parameters = ["quiet", "console=ttyS0"]
                 .unwrap();
             assert_eq!(kp.len(), 2, "stage {stage_addr}");
         }
+    }
+
+    /// Old-twoliter silently seeds `in-place-updates`, `host-containers`,
+    /// and `external-kmod-development` when the variant does not opt
+    /// into a stripped-down image (`standalone-image` or `image-format
+    /// = "eif"`). Losing that seed makes the core-kit's `os` package
+    /// skip `bork` (its `Requires: (bork or image-feature(no-in-place-updates))`
+    /// is satisfied by the metadata RPM instead), which explodes on
+    /// first boot as `sundog: Failed to start generator 'bork seed'`.
+    #[test]
+    fn full_image_silently_seeds_in_place_updates_and_host_containers() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "raw"
+
+[image.features]
+uefi-secure-boot = false
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
+                &[],
+                &pkgs(&[]),
+            )
+            .unwrap();
+        let image = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        let features = image.config.get("image").unwrap().get("features").unwrap();
+        assert_eq!(
+            features.get("in-place-updates").and_then(|v| v.as_bool()),
+            Some(true),
+            "in-place-updates must be silently seeded for a full image"
+        );
+        assert_eq!(
+            features.get("host-containers").and_then(|v| v.as_bool()),
+            Some(true),
+            "host-containers must be silently seeded for a full image"
+        );
+        assert_eq!(
+            features
+                .get("external-kmod-development")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "external-kmod-development must be silently seeded for a full image"
+        );
+    }
+
+    /// An explicit `false` in the variant's `[image.features]` overrides
+    /// the silent seed. Mirrors old-twoliter's dev-variant convention.
+    #[test]
+    fn explicit_false_overrides_silent_seed() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "raw"
+
+[image.features]
+in-place-updates = false
+external-kmod-development = false
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
+                &[],
+                &pkgs(&[]),
+            )
+            .unwrap();
+        let image = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        let features = image.config.get("image").unwrap().get("features").unwrap();
+        assert!(
+            features.get("in-place-updates").is_none(),
+            "explicit false must strip in-place-updates from the resolved set"
+        );
+        assert!(
+            features.get("external-kmod-development").is_none(),
+            "explicit false must strip external-kmod-development from the resolved set"
+        );
+        // `host-containers` was not touched by the user, so the silent
+        // seed must survive.
+        assert_eq!(
+            features.get("host-containers").and_then(|v| v.as_bool()),
+            Some(true),
+        );
+    }
+
+    /// `standalone-image = true` swaps the seed: no `in-place-updates`,
+    /// no `host-containers` (both would collide with the stripped
+    /// layout).
+    #[test]
+    fn standalone_image_seeds_a_stripped_set() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "raw"
+
+[image.features]
+standalone-image = true
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
+                &[],
+                &pkgs(&[]),
+            )
+            .unwrap();
+        let image = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        let features = image.config.get("image").unwrap().get("features").unwrap();
+        assert_eq!(
+            features.get("standalone-image").and_then(|v| v.as_bool()),
+            Some(true),
+        );
+        assert!(features.get("in-place-updates").is_none());
+        assert!(features.get("host-containers").is_none());
+    }
+
+    /// `image-format = "eif"` triggers the same stripped seed as
+    /// `standalone-image = true`.
+    #[test]
+    fn eif_format_seeds_a_stripped_set() {
+        let v = parse(
+            r#"
+name = "x"
+version = "0.1.0"
+
+[image]
+format = "eif"
+"#,
+        );
+        let schema = v
+            .to_edo(
+                &Addr::parse("//variants").unwrap(),
+                std::path::Path::new("."),
+                &[],
+                &pkgs(&[]),
+            )
+            .unwrap();
+        let image = schema
+            .transforms()
+            .get(&Addr::parse("//variants/x").unwrap())
+            .unwrap();
+        let features = image.config.get("image").unwrap().get("features").unwrap();
+        assert_eq!(
+            features.get("standalone-image").and_then(|v| v.as_bool()),
+            Some(true),
+        );
+        assert!(features.get("in-place-updates").is_none());
+        assert!(features.get("host-containers").is_none());
     }
 
     #[test]

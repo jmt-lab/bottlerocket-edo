@@ -62,6 +62,10 @@ pub mod error {
             version: String,
             arch: String,
         },
+        #[snafu(display("failed to publish AMI: {source}"))]
+        PublishAmi {
+            source: twoliter::variant::publish::Error,
+        },
     }
 }
 

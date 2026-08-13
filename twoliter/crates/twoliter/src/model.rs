@@ -48,6 +48,13 @@ impl std::fmt::Display for Arch {
     }
 }
 
+impl std::str::FromStr for Arch {
+    type Err = ArchError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 #[derive(Snafu, Debug)]
 pub enum ArchError {
     #[snafu(display("unsupported architecture: {value}"))]

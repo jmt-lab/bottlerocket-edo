@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/amispec",
     "crates/error-utils",
     "crates/pubsys-config",
     "crates/twoliter",

@@ -35,6 +35,7 @@ pub struct Publish {
 #[derive(Parser, Debug, Clone)]
 enum PublishCommand {
     Kit(PublishKit),
+    Ami(PublishAmi),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -45,10 +46,84 @@ pub struct PublishKit {
     uri: String,
 }
 
+/// `twoliter publish ami …` — register/copy an AMI from a local
+/// `variant-image` artifact, or grant/revoke launch permissions on
+/// already-registered AMIs.
+#[derive(Parser, Debug, Clone)]
+#[clap(version, about = "publish an ami built from a variant-image artifact", long_about = None)]
+pub struct PublishAmi {
+    #[clap(subcommand)]
+    command: PublishAmiCommand,
+}
+
+#[derive(Parser, Debug, Clone)]
+enum PublishAmiCommand {
+    /// Register an AMI from a local `variant-image` artifact and
+    /// copy it to additional regions.
+    Register(twoliter::variant::publish::Register),
+    /// Grant or revoke launch permissions on already-registered AMIs.
+    /// Reads the `--ami-output` JSON emitted by `register`.
+    Permissions(twoliter::variant::publish::aws::publish_ami::Permissions),
+}
+
 impl Publish {
     pub async fn run(&self, args: Args) -> Result<()> {
         match &self.command {
             PublishCommand::Kit(kit) => kit.run(args).await,
+            PublishCommand::Ami(ami) => ami.run(args).await,
+        }
+    }
+}
+
+impl PublishAmi {
+    pub async fn run(&self, args: Args) -> Result<()> {
+        match &self.command {
+            PublishAmiCommand::Register(reg) => {
+                // Build the edo context targeting `//variants/<name>`
+                // so the variant-image transform is loaded and its
+                // dependency graph resolved. This lets the register
+                // pipeline look up the local artifact via storage.
+                let target = format!("//variants/{}", reg.variant);
+                let ctx = super::create_context(
+                    &args,
+                    &target,
+                    std::collections::HashMap::default(),
+                    true,
+                    false,
+                )
+                .await?;
+                reg.run(&ctx).await.map_err(|source| {
+                    crate::error::Error::PublishAmi {
+                        source: twoliter::variant::publish::Error::Register {
+                            source: Box::new(source),
+                        },
+                    }
+                })
+            }
+            PublishAmiCommand::Permissions(perm) => {
+                // Grant/revoke doesn't touch edo artifacts — but we
+                // still want to know where the project's Infra.toml
+                // lives. `create_context` gives us `project_dir()`
+                // with the same resolution rules the rest of the CLI
+                // uses. We pass a synthetic target since we don't
+                // build any transform here.
+                let ctx = super::create_context(
+                    &args,
+                    "//variants",
+                    std::collections::HashMap::default(),
+                    true,
+                    false,
+                )
+                .await?;
+                let infra_config_path = ctx.project_dir().join("Infra.toml");
+                perm.run(infra_config_path).await.map_err(|source| {
+                    crate::error::Error::PublishAmi {
+                        source: twoliter::variant::publish::Error::Permissions {
+                            source: Box::new(source),
+                        },
+                    }
+                })
+            }
         }
     }
 }

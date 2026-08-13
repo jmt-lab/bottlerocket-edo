@@ -1,0 +1,17 @@
+[package]
+name = "amispec"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[dependencies]
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "behavior-version-latest"] }
+bounded-integer = { version = "0.5", features = ["std", "serde1", "types", "num-traits02"] }
+num-traits = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_plain = "1"
+snafu = { workspace = true }
+
+[dev-dependencies]
+toml = "0.9"
