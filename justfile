@@ -28,8 +28,12 @@ _variant-toml:
         cargo_json="$(tq -o json . < "${cargo_toml}")"
         bv="$(jq -c '.package.metadata["build-variant"] // {}' <<< "${cargo_json}")"
 
-        image_format="$(jq --raw-output '.["image-format"] // empty' <<< "${bv}")"
-        partition_plan="$(jq --raw-output '.["image-layout"]["partition-plan"] // empty' <<< "${bv}")"
+        # `image-format` and `partition-plan` have no schema defaults in
+        # twoliter-next (`config/variant.rs::VariantImageBlock`), so we
+        # fill in old-twoliter's implicit defaults (`raw` / `split`) when
+        # the upstream Cargo.toml omits them.
+        image_format="$(jq --raw-output '.["image-format"] // "raw"' <<< "${bv}")"
+        partition_plan="$(jq --raw-output '.["image-layout"]["partition-plan"] // "split"' <<< "${bv}")"
         os_size_gib="$(jq --raw-output '.["image-layout"]["os-image-size-gib"] // empty' <<< "${bv}")"
         data_size_gib="$(jq --raw-output '.["image-layout"]["data-image-size-gib"] // empty' <<< "${bv}")"
         # The current variant.toml schema (`config/variant.rs::VariantImageBlock`)
@@ -44,6 +48,14 @@ _variant-toml:
         features_json="$(jq -c '.["image-features"] // {}' <<< "${bv}")"
         kernel_params_json="$(jq -c '.["kernel-parameters"] // []' <<< "${bv}")"
         included_packages_json="$(jq -c '.["included-packages"] // []' <<< "${bv}")"
+
+        # [variant.local-packages] is derived from the upstream Cargo
+        # `[build-dependencies]` table, filtered to names that actually
+        # exist as `packages/<name>/` in this repo. Upstream lists every
+        # in-repo settings crate here (settings-defaults, settings-plugins,
+        # settings-migrations, ...); we only emit the ones we've ported,
+        # so the downstream `Variant::to_edo` transitive closure resolves.
+        build_deps_json="$(jq -c '.["build-dependencies"] // {} | keys' <<< "${cargo_json}")"
 
         {
             echo 'schema-version = "3"'
@@ -113,6 +125,32 @@ _variant-toml:
                 echo 'packages = ['
                 for i in $(seq 0 $((n_pkg - 1))); do
                     p="$(jq --raw-output ".[${i}]" <<< "${included_packages_json}")"
+                    printf '    "%s",\n' "${p}"
+                done
+                echo ']'
+            fi
+
+            # local-packages: build-dependencies that we've ported into
+            # this repo (i.e. have a `packages/<name>/` directory). The
+            # downstream `Variant::to_edo` transitively closes over each
+            # package's `depends`, so only the top-level entries are
+            # emitted here.
+            local_pkgs=()
+            n_bd="$(jq 'length' <<< "${build_deps_json}")"
+            for i in $(seq 0 $((n_bd - 1))); do
+                dep="$(jq --raw-output ".[${i}]" <<< "${build_deps_json}")"
+                if [ -d "packages/${dep}" ]; then
+                    local_pkgs+=("${dep}")
+                fi
+            done
+            if [ "${#local_pkgs[@]}" -gt 0 ]; then
+                echo
+                echo '# In-repo packages built from `packages/<name>/package.toml`. Names'
+                echo "# are transitively closed over each package's \`[package].depends\` at"
+                echo '# emit time, so listing the top-level packages is enough.'
+                echo '[variant.local-packages]'
+                echo 'packages = ['
+                for p in "${local_pkgs[@]}"; do
                     printf '    "%s",\n' "${p}"
                 done
                 echo ']'
