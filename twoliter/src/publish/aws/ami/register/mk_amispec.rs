@@ -435,8 +435,6 @@ mod test {
 
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -479,8 +477,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -530,8 +526,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -595,8 +589,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -649,8 +641,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -919,8 +909,6 @@ mod test {
 
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -962,8 +950,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: PathBuf::new(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -1019,8 +1005,6 @@ mod test {
     }
     #[test_case(
         AmiArgs {
-            os_image: Default::default(),
-            data_image: None,
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]
@@ -1044,8 +1028,6 @@ mod test {
     )]
     #[test_case(
         AmiArgs {
-            os_image: Default::default(),
-            data_image: Default::default(),
             variant_manifest: VariantManifest::new(
                 toml::toml! {
                     [package]

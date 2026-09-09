@@ -1,4 +1,4 @@
-use super::{AmiArgs, snapshot::snapshot_from_image};
+use super::{AmiArgs, snapshot::snapshot_from_image, stage::StagedImages};
 use crate::publish::aws::ami::snapshot::build_progress_bar;
 use aws_sdk_ebs::Client as EbsClient;
 use aws_sdk_ec2::types::Filter;
@@ -27,6 +27,7 @@ pub(crate) struct RegisteredIds {
 /// they can be cleaned up on failure if desired.
 async fn _register_image(
     ami_args: &AmiArgs,
+    images: &StagedImages,
     region: &Region,
     ebs_client: EbsClient,
     ec2_client: &Ec2Client,
@@ -34,6 +35,7 @@ async fn _register_image(
 ) -> Result<RegisteredIds> {
     let bottlerocket_snapshots = BottlerocketSnapshots::create_snapshots(
         ami_args,
+        images,
         region,
         ebs_client,
         ec2_client,
@@ -116,6 +118,7 @@ impl BottlerocketSnapshots {
     /// Snapshot IDs are added to `cleanup_snapshot_ids` so that they can be deleted on cleanup.
     async fn create_snapshots(
         ami_args: &AmiArgs,
+        images: &StagedImages,
         region: &Region,
         ebs_client: EbsClient,
         ec2_client: &Ec2Client,
@@ -160,9 +163,9 @@ impl BottlerocketSnapshots {
             }))
         };
 
-        let os_upload = create_snapshot_task.clone()(ami_args.os_image.clone(), "root")?;
+        let os_upload = create_snapshot_task.clone()(images.os_image.clone(), "root")?;
 
-        let data_upload: OptionFuture<_> = ami_args
+        let data_upload: OptionFuture<_> = images
             .data_image
             .as_ref()
             .map(|data_image| create_snapshot_task(data_image.clone(), "data"))
@@ -198,6 +201,7 @@ pub(crate) enum CreateSnapshotError {
 /// mapping.  Deletes snapshots on failure.
 pub(crate) async fn register_image(
     ami_args: &AmiArgs,
+    images: &StagedImages,
     region: &Region,
     ebs_client: EbsClient,
     ec2_client: &Ec2Client,
@@ -205,6 +209,7 @@ pub(crate) async fn register_image(
     let cleanup_snapshot_ids = Arc::new(Mutex::new(Vec::new()));
     let register_result = _register_image(
         ami_args,
+        images,
         region,
         ebs_client,
         ec2_client,

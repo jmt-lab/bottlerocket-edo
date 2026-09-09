@@ -217,7 +217,7 @@ async fn publish_kit(
         // Push the image
         platform_images.push(image.push(&uri).await.context(error::PublishKitSnafu)?);
     }
-    ui_info!(subsystem = "twoliter", component = "kit", op = "publish", "pushing oci image index");
+    ui_info!(subsystem = "twoliter", component = "kit", op = "publish"; "pushing oci image index");
     ensure!(!platform_images.is_empty(), error::NoArchiveSnafu);
 
     // Now we construct the index to push

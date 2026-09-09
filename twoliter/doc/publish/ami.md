@@ -39,8 +39,12 @@ consistent slot.
 
 Ports `old-twoliter/tools/pubsys/src/aws/ami/mod.rs`:
 
-1. Load the variant's `manifest.json` (produced by the `variant-image`
-   transform) and the `os.img` + optional `data.img` layers from storage.
+1. Load the variant manifest from `--variant-manifest`, then resolve
+   `//variants/<manifest.name>` for `--arch` in an edo context (same
+   `create_context` path as `publish kit`) and decode the `*.img.lz4` /
+   `*-data.img.lz4` entries out of the artifact's tar layer into a staging
+   directory under `<storage>/publish/`. The variant must already be built;
+   there is no `--os-image` / `--data-image` flag.
 2. For each region:
    1. Upload OS/data via EBS snapshot API (`ebs.rs` in old pubsys).
    2. Wait for snapshot completion.

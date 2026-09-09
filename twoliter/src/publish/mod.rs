@@ -73,7 +73,7 @@ pub async fn run(cli_args: &crate::Args, args: &Args) -> Result<()> {
                 .await
                 .context(error::FetchVariantSnafu)
         }
-        SubCommands::Ami(ref ami_args) => aws::ami::run(&args, ami_args)
+        SubCommands::Ami(ref ami_args) => aws::ami::run(cli_args, &args, ami_args)
             .await
             .context(error::AmiSnafu),
         SubCommands::PublishAmi(ref publish_args) => aws::publish_ami::run(&args, publish_args)

@@ -5,6 +5,7 @@ pub(crate) mod launch_permissions;
 pub(crate) mod public;
 mod register;
 mod snapshot;
+mod stage;
 pub(crate) mod wait;
 
 use self::register::mk_amispec;
@@ -43,16 +44,12 @@ use wait::wait_for_ami;
 const WARN_SEPARATOR: &str = "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
 
 /// Builds Bottlerocket AMIs using latest build artifacts
+///
+/// The OS and data images are read from the edo artifact cache, so the
+/// variant named by `--variant-manifest` must already have been built for
+/// `--arch` (`twoliter build variant <name>`).
 #[derive(Debug, Parser)]
 pub(crate) struct AmiArgs {
-    /// Path to the image containing the os volume
-    #[arg(short = 'o', long)]
-    os_image: PathBuf,
-
-    /// Path to the image containing the data volume
-    #[arg(short = 'd', long)]
-    data_image: Option<PathBuf>,
-
     /// Path to the variant manifest
     #[arg(short = 'v', long, value_parser = parse_variant_manifest)]
     variant_manifest: VariantManifest,
@@ -91,8 +88,12 @@ pub(crate) struct AmiArgs {
 }
 
 /// Common entrypoint from main()
-pub(crate) async fn run(args: &crate::publish::Args, ami_args: &AmiArgs) -> Result<()> {
-    match _run(args, ami_args).await {
+pub(crate) async fn run(
+    cli_args: &crate::Args,
+    args: &crate::publish::Args,
+    ami_args: &AmiArgs,
+) -> Result<()> {
+    match _run(cli_args, args, ami_args).await {
         Ok(amis) => {
             // Write the AMI IDs to file if requested
             if let Some(ref path) = ami_args.ami_output {
@@ -106,7 +107,11 @@ pub(crate) async fn run(args: &crate::publish::Args, ami_args: &AmiArgs) -> Resu
     }
 }
 
-async fn _run(args: &crate::publish::Args, ami_args: &AmiArgs) -> Result<HashMap<String, Image>> {
+async fn _run(
+    cli_args: &crate::Args,
+    args: &crate::publish::Args,
+    ami_args: &AmiArgs,
+) -> Result<HashMap<String, Image>> {
     let mut amis = HashMap::new();
 
     // If a lock file exists, use that, otherwise use Infra.toml or default
@@ -212,7 +217,25 @@ async fn _run(args: &crate::publish::Args, ami_args: &AmiArgs) -> Result<HashMap
             "Registering '{}' in {}",
             tentative_amispec.name, base_region
         );
-        let new_ids = register_image(ami_args, &base_region, base_ebs_client, &base_ec2_client)
+        // Only pull the images out of the artifact cache once we know we
+        // actually have to register: decoding them costs gigabytes of IO.
+        // `arch` above is the EC2 architecture name (`arm64`); the edo
+        // context wants the machine arch the variant was built for
+        // (`aarch64`), which is what `--arch` carries.
+        let variant = &ami_args.variant_manifest.name;
+        let staged_images = stage::stage_variant_images(cli_args, variant, &ami_args.arch)
+            .await
+            .context(error::StageImagesSnafu {
+                variant: variant.clone(),
+                arch: &ami_args.arch,
+            })?;
+        let new_ids = register_image(
+            ami_args,
+            &staged_images,
+            &base_region,
+            base_ebs_client,
+            &base_ec2_client,
+        )
             .await
             .context(error::RegisterImageSnafu {
                 name: &tentative_amispec.name,
@@ -707,6 +730,14 @@ mod error {
         ReadFile {
             filepath: PathBuf,
             source: std::io::Error,
+        },
+
+        #[snafu(display("Failed to stage images for {} ({}): {}", variant, arch, source))]
+        StageImages {
+            variant: String,
+            arch: String,
+            #[snafu(source(from(ami::stage::Error, Box::new)))]
+            source: Box<ami::stage::Error>,
         },
 
         #[snafu(display("Error registering {} {} in {}: {}", arch, name, region, source))]
