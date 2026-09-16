@@ -100,4 +100,5 @@ edo = { path = "../../edo/crates/edo" }
 edo-core = { path = "../../edo/crates/core" }
 
 [patch.crates-io]
-ocilot = { git = "https://github.com/jmt-lab/ocilot.git", branch = "fix/ecr-image"}
+ocilot = { path = "../../ocilot" }
+

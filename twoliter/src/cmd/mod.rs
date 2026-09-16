@@ -8,10 +8,11 @@ mod update;
 pub(crate) mod util;
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 pub use build::*;
 pub use checkout::*;
-use edo::context::Element;
+use edo::context::{Element, EventLog};
 use edo::context::{Addr, Context, LogVerbosity};
 use edo_core::register_core;
 pub use fetch::*;
@@ -37,15 +38,13 @@ pub async fn create_context<S: AsRef<str>>(
     } else {
         LogVerbosity::Info
     };
-    let console_cfg = edo::context::ConsoleConfig {
-        event_log: args.resolve_event_log(),
-    };
+    let event_log = EventLog::Path(PathBuf::from(".edo/log.jsonl"));
     let ctx = Context::init(
         args.storage.clone(),
         args.config.clone(),
         variables.clone(),
         verbosity,
-        console_cfg,
+        event_log,
     )
     .await?;
     // Provenance header: emit before any project loading so the JSONL
@@ -58,7 +57,7 @@ pub async fn create_context<S: AsRef<str>>(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     edo::header!(
-        "twoliter" @ &semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap() => target.as_ref(), variables.into_iter().collect()
+        "twoliter" @ &semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap() => target.as_ref(), variables
     );
     // Register all core component handlers
     register_core(&ctx);

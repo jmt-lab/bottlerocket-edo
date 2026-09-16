@@ -13,6 +13,14 @@ pub struct Package {
     pub depends: Vec<String>,
     #[serde(default)]
     pub source: Vec<Source>,
+    /// Non-default Go toolchain major version to select from the SDK
+    /// (e.g. `"1.26"`). When set, exported as `GO_MAJOR=<value>` for the
+    /// `go-vendor` transforms attached to this package. The RPM's
+    /// `%build` section is expected to set the same variable itself so
+    /// the actual build picks the matching toolchain. When absent, the
+    /// SDK's default Go is used.
+    #[serde(default)]
+    pub go_major: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -161,6 +169,19 @@ impl Package {
                 let bundle_addr = pkg_addr.join(&Addr::parse(&format!(
                     "src-{index}-go-vendored-{go_index}"
                 ))?);
+                let mut go_config = BTreeMap::from([("modules".to_string(), json!([module]))]);
+                // The SDK ships multiple Go toolchains and selects between
+                // them by inspecting `GO_MAJOR`. When the package declares
+                // a non-default `go-major`, propagate it into the vendor
+                // step so `go mod vendor` runs under the same toolchain
+                // as the RPM `%build`; otherwise `go.mod`'s `toolchain`
+                // directive can trip up the default (older) Go.
+                if let Some(major) = self.go_major.as_deref() {
+                    go_config.insert(
+                        "env".to_string(),
+                        json!({ "GO_MAJOR": major }),
+                    );
+                }
                 transforms.insert(
                     bundle_addr.clone(),
                     Element::builder()
@@ -171,7 +192,7 @@ impl Package {
                             "default".to_string(),
                             vec![address.clone()],
                         )])))
-                        .config(BTreeMap::from([("modules".to_string(), json!([module]))]))
+                        .config(go_config)
                         .build(),
                 );
                 bundles.insert(bundle_addr, format!("bundled-{output}"));
@@ -244,5 +265,74 @@ impl Package {
             .source(sources)
             .transform(transforms)
             .build())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `go-major` is optional and, when present, is forwarded to every
+    /// emitted `go-vendor` transform as `env.GO_MAJOR`. Regressions here
+    /// would silently drop the toolchain override for packages like
+    /// kubernetes/containerd-2.3, and the resulting `go mod vendor`
+    /// would run under the SDK's default (older) Go.
+    #[test]
+    fn go_major_propagates_to_go_vendor_env() {
+        let pkg = Package {
+            name: "example".to_string(),
+            path: PathBuf::from("packages/example"),
+            depends: vec![],
+            source: vec![Source::Url {
+                url: "https://example/x.tar.gz".to_string(),
+                digest: "deadbeef".to_string(),
+                out: "x.tar.gz".to_string(),
+                go_modules: vec!["mod-a".to_string()],
+                cargo_projects: vec![],
+            }],
+            go_major: Some("1.26".to_string()),
+        };
+        let addr = Addr::parse("//packages").unwrap();
+        let schema = pkg.to_edo(&addr, &[]).unwrap();
+        let vendor_addr =
+            Addr::parse("//packages/example/src-0-go-vendored-0").unwrap();
+        let element = schema
+            .transforms()
+            .get(&vendor_addr)
+            .expect("go-vendor transform emitted");
+        let env = element.config.get("env").expect("env forwarded to go-vendor");
+        assert_eq!(env, &json!({ "GO_MAJOR": "1.26" }));
+    }
+
+    /// Without `go-major`, the emitted `go-vendor` config carries no
+    /// `env` key at all so the SDK's default Go is picked up
+    /// unchanged.
+    #[test]
+    fn go_major_absent_omits_env() {
+        let pkg = Package {
+            name: "example".to_string(),
+            path: PathBuf::from("packages/example"),
+            depends: vec![],
+            source: vec![Source::Url {
+                url: "https://example/x.tar.gz".to_string(),
+                digest: "deadbeef".to_string(),
+                out: "x.tar.gz".to_string(),
+                go_modules: vec!["mod-a".to_string()],
+                cargo_projects: vec![],
+            }],
+            go_major: None,
+        };
+        let addr = Addr::parse("//packages").unwrap();
+        let schema = pkg.to_edo(&addr, &[]).unwrap();
+        let vendor_addr =
+            Addr::parse("//packages/example/src-0-go-vendored-0").unwrap();
+        let element = schema
+            .transforms()
+            .get(&vendor_addr)
+            .expect("go-vendor transform emitted");
+        assert!(
+            element.config.get("env").is_none(),
+            "env must be omitted when go-major is unset"
+        );
     }
 }

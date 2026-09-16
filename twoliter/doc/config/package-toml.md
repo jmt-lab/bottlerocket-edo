@@ -16,6 +16,11 @@ name = "kernel-6.1"
 # depends: RPMs that must be built before this one. Each entry `foo`
 # becomes an edge to `//packages/foo/rpm`.
 depends = ["glibc", "openssl"]
+# Optional: non-default Go toolchain for `go-vendor` transforms. Mirrors
+# the `export GO_MAJOR="X.Y"` line that some spec files put in their
+# `%build` section (kubernetes, containerd-2.3, etc.). Omit to use the
+# SDK's default Go.
+go-major = "1.26"
 
 # Upstream tarball fetched via edo's `remote` source. The `[lookaside]`
 # S3 source cache in Twoliter.toml (if present) sits transparently in
@@ -81,6 +86,14 @@ vendored = ["//sources/another-crate"]
 - `go-modules` / `cargo-projects` on URL and local sources — trigger a
   `go-vendor` or `cargo-vendor` transform against that source. The
   vendored artifact is fed into the RPM transform as `bundled-<name>`.
+- `[package].go-major` — non-default Go toolchain major version
+  (e.g. `"1.26"`) exported as `GO_MAJOR=<value>` for every `go-vendor`
+  transform emitted for this package. The Bottlerocket SDK ships more
+  than one Go and selects between them by inspecting `GO_MAJOR`;
+  packages whose `%build` section sets `export GO_MAJOR="X.Y"` must
+  mirror the same value here so `go mod vendor` runs under the matching
+  toolchain. `just sync-package` extracts it from the spec
+  automatically. Omit for the SDK default.
 
 ## Emitted schema
 

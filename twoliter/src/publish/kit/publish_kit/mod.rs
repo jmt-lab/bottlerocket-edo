@@ -111,10 +111,20 @@ async fn publish_kit(
         version = Some(kit_version.clone());
 
         // Get the Artifact Manifest, the metadata in the config will have
-        // everything we need for the metadata label
+        // everything we need for the metadata label.
+        //
+        // Strip `packages` before encoding: legacy twoliter deserializes
+        // this label with `deny_unknown_fields` and only knows `name`,
+        // `version`, `sdk`, `kit`. Emitting `packages` on the published
+        // label breaks legacy AMI builds that consume the kit. We keep it
+        // on the local artifact metadata so in-project tooling can still
+        // enumerate kit contents without parsing layers.
         let artifact = ctx.storage().safe_open(&id).await?;
-        let metadata_label =
-            serde_json::to_vec(artifact.config().metadata()).context(error::SerializeSnafu)?;
+        let mut metadata = artifact.config().metadata().clone();
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.remove("packages");
+        }
+        let metadata_label = serde_json::to_vec(&metadata).context(error::SerializeSnafu)?;
         let metadata_label = base64::engine::general_purpose::STANDARD.encode(&metadata_label);
 
         // Construct the URI target
@@ -153,12 +163,15 @@ async fn publish_kit(
                 image_layers.push(writer.layer().await.context(error::PublishKitSnafu)?);
             } else {
                 edo::ui_info!(subsystem = "twoliter", component = "kit", op = "publish"; "layer with digest {} already exists", layer.digest().digest());
+                // Layer entries in an OCI image manifest must not carry a
+                // `platform` field; that belongs on manifest entries of an
+                // image index. ECR's PutImage rejects the whole manifest
+                // (HTTP 405 "Invalid JSON syntax") when it sees it here.
                 image_layers.push(
                     Layer::builder()
                         .media_type(layer_type.clone())
                         .size(*layer.size())
                         .digest(format!("sha256:{}", layer.digest().digest()))
-                        .platform(image_platform.clone())
                         .build(),
                 );
             }
