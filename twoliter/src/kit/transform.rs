@@ -3,12 +3,11 @@ use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
     source::Source,
-    storage::{Artifact, ArtifactStageOptions, Compression, Config, Id, LayerOptions, MediaType},
+    storage::{Artifact, ArtifactStageOptions, Compression, Config, Digest, Id, LayerOptions, MediaType},
     transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
 };
 use ocilot::models::Platform;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use snafu::OptionExt;
 use std::path::Path;
 use tracing::trace;
@@ -96,7 +95,7 @@ impl TransformImpl for KitTransform {
     /// Computes a unique content-address ID for the kit using
     /// the packages and kit deps being built.
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
-        let mut hash = Sha256::new();
+        let mut hash = Digest::builder();
 
         // Hash package deps and kit deps deterministically by address.
         let mut deps = self.options.packages.clone();
@@ -108,23 +107,22 @@ impl TransformImpl for KitTransform {
                 .context(error::DependSnafu { addr: dep.clone() })?
                 .get_unique_id(ctx)
                 .await?;
-            hash.update(dep_id.digest().as_bytes());
+            hash.update(dep_id.digest().hash());
         }
         // Fold in the SDK source identity so a new SDK image triggers a
         // rebuild of the kit (its embedded metadata depends on it).
         let sdk_id = self.sdk_source.get_unique_id().await?;
-        hash.update(sdk_id.digest().as_bytes());
+        hash.update(sdk_id.digest().hash());
 
         // Fold in the kit's own identity so two distinct kits don't alias
         // when they consume the same set of packages.
         hash.update(self.options.name.as_bytes());
         hash.update(self.options.version.to_string().as_bytes());
 
-        let hash_bytes = hash.finalize();
-        let digest = base16::encode_lower(hash_bytes.as_slice());
+        let digest = hash.build();
         let id = Id::builder()
             .name(self.options.name.clone())
-            .digest(digest.to_lowercase())
+            .digest(digest)
             .version(self.options.version.clone())
             .maybe_arch(self.options.arch.clone())
             .build();

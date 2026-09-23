@@ -8,11 +8,10 @@ use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs, shell_quote, shell_quote_path},
     source::Source,
-    storage::{ArtifactStageOptions, Id},
+    storage::{ArtifactStageOptions, Digest, Id},
     transform::{TransformImpl, TransformResult, TransformStatus},
 };
 use ocilot::models::Platform;
-use sha2::{Digest, Sha256};
 use snafu::OptionExt;
 use std::path::Path;
 use tracing::trace;
@@ -65,12 +64,12 @@ impl TransformImpl for RepoTransform {
 
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
         // The rootfs id is calculated using anything and everything that could mutate the image
-        let mut digest = Sha256::new();
+        let mut digest = Digest::builder();
 
         // (1) All packages served by the external kits
         for kit in self.kits.iter() {
             let id = kit.get_unique_id().await?;
-            digest.update(id.digest().as_bytes());
+            digest.update(id.digest().hash());
         }
         // (2) Packages served locally
         for package in self.options.depends.iter() {
@@ -78,7 +77,7 @@ impl TransformImpl for RepoTransform {
                 addr: package.clone(),
             })?;
             let id = t.get_unique_id(ctx).await?;
-            digest.update(id.digest().as_bytes());
+            digest.update(id.digest().hash());
         }
 
         // (2) Configuration options in VariantOptions that affect the RootFs
@@ -88,8 +87,7 @@ impl TransformImpl for RepoTransform {
         let bitset = &self.options.image.features.as_bytes();
         digest.update(bitset);
 
-        let digest = digest.finalize();
-        let digest = base16::encode_lower(digest.as_slice());
+        let digest = digest.build();
         let id = Id::builder()
             .name(format!("{}-repo", self.options.name))
             .digest(digest)

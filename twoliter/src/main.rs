@@ -11,6 +11,7 @@ pub type Result<T> = std::result::Result<T, error::Error>;
 
 pub mod error {
     use edo::context::Addr;
+    use edo::storage::Digest;
     use snafu::Snafu;
 
     #[derive(Snafu, Debug)]
@@ -40,7 +41,7 @@ pub mod error {
              filename for it. This is a producer bug — the transform that emitted this layer \
              should record `config.path_hints[digest] = <filename>`."
         ))]
-        CheckoutLayerMissingPathHint { media_type: String, digest: String },
+        CheckoutLayerMissingPathHint { media_type: String, digest: Digest },
         #[snafu(transparent)]
         Source { source: edo::source::SourceError },
         #[snafu(transparent)]

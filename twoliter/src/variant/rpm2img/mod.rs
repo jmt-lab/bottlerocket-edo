@@ -12,6 +12,7 @@ use crate::{
     },
 };
 use async_trait::async_trait;
+use edo::storage::Digest;
 use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
     environment::{Environment, Vfs},
@@ -20,7 +21,6 @@ use edo::{
     transform::{TransformError, TransformImpl, TransformResult, TransformStatus},
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use snafu::{OptionExt, ensure};
 use tracing::trace;
 
@@ -158,7 +158,7 @@ impl TransformImpl for RPM2ImageTransform {
     }
 
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
-        let mut digest = Sha256::new();
+        let mut digest = Digest::builder();
 
         // (1) All artifacts coming from dependent transforms
         for addr in self
@@ -171,7 +171,7 @@ impl TransformImpl for RPM2ImageTransform {
                 .get(addr)
                 .context(error::DependSnafu { addr: addr.clone() })?;
             let id = t.get_unique_id(ctx).await?;
-            digest.update(id.digest().as_bytes());
+            digest.update(id.digest().hash());
         }
 
         // (1b) All external kits — their content flows into the image's
@@ -179,7 +179,7 @@ impl TransformImpl for RPM2ImageTransform {
         // invalidate the image cache.
         for kit in self.kits.iter() {
             let id = kit.source.get_unique_id().await?;
-            digest.update(id.digest().as_bytes());
+            digest.update(id.digest().hash());
         }
 
         // (2) All settings that could alter the output images
@@ -199,8 +199,7 @@ impl TransformImpl for RPM2ImageTransform {
         digest.update(self.options.image.os_size.unwrap_or(1u16).to_be_bytes());
         digest.update(self.options.image.data_size.unwrap_or(1u16).to_be_bytes());
         digest.update(self.options.image.features.as_bytes());
-        let digest = digest.finalize();
-        let digest = base16::encode_lower(digest.as_slice());
+        let digest = digest.build();
         let id = Id::builder()
             .name(format!("{}-img", self.options.name))
             .digest(digest)
@@ -549,7 +548,7 @@ impl TransformImpl for RPM2ImageTransform {
             // used to be): a wall-clock value churns on every rebuild, which
             // (a) breaks reproducibility and (b) invalidates every cached
             // downstream artifact that keys off `${VERSION_ID}-${BUILD_ID}`.
-            let build_id: String = id.digest().chars().take(8).collect();
+            let build_id: String = id.digest().to_string().chars().take(8).collect();
             vfs.set_env("BUILD_ID", &build_id).await?;
             vfs.set_env("PRETTY_NAME", "Bottlerocket OS").await?;
             // TODO: add config option for this

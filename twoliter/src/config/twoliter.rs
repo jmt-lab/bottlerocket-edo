@@ -253,17 +253,6 @@ impl Twoliter {
             .environment(environments)
             .config(project_config)
             .build();
-        schema.add_source_cache(
-            "kit-image",
-            Element::builder()
-                .addr(cache_addr)
-                .kind("local")
-                .config(BTreeMap::from([(
-                    "path".to_string(),
-                    json!("target/edo/source-cache/kit-image"),
-                )]))
-                .build(),
-        );
 
         // 6. Optional S3-backed source cache for `[[package.external-files]]`
         //    (which are emitted as `kind = "remote"` sources by

@@ -28,26 +28,30 @@
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use edo::context::{Context, Element, FromElement, Log};
-use edo::record;
-use edo::source::{SourceImpl, SourceResult};
-use edo::storage::{Artifact, Compression, Config, Id, LayerOptions, MediaType, Storage};
-use ocilot::index::Index;
-use ocilot::models::{Compression as OciCompression, MediaType as OciMediaType, Platform};
-use ocilot::uri::Uri;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use snafu::{OptionExt, ResultExt, ensure};
 use std::collections::BTreeSet;
+
+use edo::{
+    context::{Context, Element, FromElement, Log},
+    record,
+    source::{SourceImpl, SourceResult},
+    storage::{Artifact, Compression, Config, Id, LayerOptions, MediaType, Storage, Digest}
+};
+use ocilot::{
+    index::Index,
+    models::{Compression as OciCompression, MediaType as OciMediaType, Platform},
+    uri::Uri
+};
 
 /// The OCI image-config label that carries the base64-encoded
 /// [`KitMetadata`] blob written by the `kit` transform.
 ///
 /// This must match the label emitted by `cmd::publish` and the label
 /// used on all published Bottlerocket kit images.
-pub const KIT_METADATA_LABEL: &str = "dev.bottlerocket.kit.v3";
+pub const KIT_METADATA_LABEL: &str = "dev.bottlerocket.kit.v4";
 
 /// A reference to another kit or the SDK, as recorded in [`KitMetadata`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -104,7 +108,7 @@ pub struct KitImageSource {
     uri: String,
     /// The image's expected merkle digest (matches edo-core's `ImageSource`).
     #[serde(rename = "ref")]
-    digest: String,
+    digest: Digest,
     /// Optional target platform. Omitting picks the host platform.
     #[serde(default)]
     platform: Option<Platform>,
@@ -160,11 +164,11 @@ impl SourceImpl for KitImageSource {
         // Pull the manifest index and verify the merkle digest before
         // writing anything to storage.
         let index = Index::fetch(&uri).await.context(error::OciSnafu)?;
-        let mut hasher = Sha256::new();
+        let mut hasher = Digest::builder();
         for manifest in index.manifests().iter() {
             hasher.update(manifest.digest().as_bytes());
         }
-        let digest = base16::encode_lower(hasher.finalize().as_slice());
+        let digest = hasher.build();
         ensure!(
             *id.digest() == digest,
             error::DigestSnafu {
@@ -260,13 +264,6 @@ impl SourceImpl for KitImageSource {
             ocilot::layer::Layer::copy(&mut reader, &mut writer_handle, image_layer.size())
                 .await
                 .context(error::OciSnafu)?;
-
-            // Pin the layer's digest to the OCI blob digest so the
-            // republish fallback in `cmd::publish` (which references
-            // `artifact_layer.digest()` when the registry already has
-            // the blob) points at the same content the upstream
-            // registry has.
-            writer.set_digest(&bare_digest);
 
             let layer = storage
                 .safe_finish_layer(
@@ -369,6 +366,7 @@ pub mod error {
     use edo::{
         context::{Addr, error::ContextError},
         source::SourceError,
+        storage::Digest,
     };
 
     #[derive(Snafu, Debug)]
@@ -380,7 +378,7 @@ pub mod error {
             source: Box<ContextError>,
         },
         #[snafu(display("kit image has digest '{actual}' when expecting '{expected}'"))]
-        Digest { actual: String, expected: String },
+        Digest { actual: Digest, expected: Digest },
         #[snafu(display("kit image source oci error: {source}"))]
         Oci { source: ocilot::error::Error },
         #[snafu(display("invalid kit image source at {addr}: {source}"))]
@@ -506,7 +504,7 @@ mod tests {
     fn sample_source(platform: Option<Platform>) -> KitImageSource {
         KitImageSource {
             uri: "public.ecr.aws/bottlerocket/core-kit:v1.42.0".to_string(),
-            digest: "aabbccdd".to_string(),
+            digest: Digest::builder().update(b"aabbccdd").build(),
             platform,
             vendor: None,
             name: None,

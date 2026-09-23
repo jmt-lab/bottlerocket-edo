@@ -148,7 +148,7 @@ async fn publish_kit(
                 &uri,
                 &layer_type,
                 *layer.size(),
-                Some(format!("sha256:{}", layer.digest().digest())),
+                Some(layer.digest().to_string()),
                 Some(&reporter),
             )
             .await
@@ -162,7 +162,7 @@ async fn publish_kit(
                 writer.shutdown().await.context(error::CopyLayerSnafu)?;
                 image_layers.push(writer.layer().await.context(error::PublishKitSnafu)?);
             } else {
-                edo::ui_info!(subsystem = "twoliter", component = "kit", op = "publish"; "layer with digest {} already exists", layer.digest().digest());
+                edo::ui_info!(subsystem = "twoliter", component = "kit", op = "publish"; "layer with digest {} already exists", layer.digest());
                 // Layer entries in an OCI image manifest must not carry a
                 // `platform` field; that belongs on manifest entries of an
                 // image index. ECR's PutImage rejects the whole manifest
@@ -171,7 +171,7 @@ async fn publish_kit(
                     Layer::builder()
                         .media_type(layer_type.clone())
                         .size(*layer.size())
-                        .digest(format!("sha256:{}", layer.digest().digest()))
+                        .digest(layer.digest().to_string())
                         .build(),
                 );
             }

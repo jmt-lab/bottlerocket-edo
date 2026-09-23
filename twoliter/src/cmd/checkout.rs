@@ -81,7 +81,7 @@ impl Checkout {
                         .path_hint_for(layer.digest())
                         .with_context(|| error::CheckoutLayerMissingPathHintSnafu {
                             media_type: value.to_string(),
-                            digest: layer.digest().digest(),
+                            digest: layer.digest().clone(),
                         })?;
                     let dest = self.output.join(hint);
                     if let Some(parent) = dest.parent() {

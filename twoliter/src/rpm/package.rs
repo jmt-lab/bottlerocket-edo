@@ -3,6 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use edo::storage::Digest;
 use edo::storage::LayerOptions;
 use edo::{
     context::{Addr, Context, Element, FromElement, Handle, Log},
@@ -13,8 +14,6 @@ use edo::{
     util::Reader,
 };
 use ocilot::models::Platform;
-use sha2::Digest;
-use sha2::Sha256;
 use snafu::OptionExt;
 use snafu::ResultExt;
 use tracing::trace;
@@ -111,7 +110,7 @@ impl TransformImpl for PackageBuildTransform {
 
     /// Computes a unique content-address ID for this package build.
     async fn get_unique_id(&self, ctx: &Handle) -> TransformResult<Id> {
-        let mut hash = Sha256::new();
+        let mut hash = Digest::builder();
 
         // (a) Dependency artifact IDs, sorted by addr for determinism
         let mut depends = self.options.depends.clone();
@@ -126,7 +125,7 @@ impl TransformImpl for PackageBuildTransform {
                 })?
                 .get_unique_id(ctx)
                 .await?;
-            hash.update(depend_id.digest().as_bytes());
+            hash.update(depend_id.digest().hash());
         }
         // (b) Bundled artifact IDs, sorted by addr for determinism
         for depend in self.options.bundled.keys() {
@@ -139,7 +138,7 @@ impl TransformImpl for PackageBuildTransform {
                 })?
                 .get_unique_id(ctx)
                 .await?;
-            hash.update(depend_id.digest().as_bytes());
+            hash.update(depend_id.digest().hash());
         }
         // (c) Kit Sources -> Archives -> Sources
         for source in self
@@ -149,13 +148,12 @@ impl TransformImpl for PackageBuildTransform {
             .chain(self.sources.iter())
         {
             let id = source.get_unique_id().await?;
-            hash.update(id.digest().as_bytes());
+            hash.update(id.digest().hash());
         }
-        let hash_bytes = hash.finalize();
-        let digest = base16::encode_lower(hash_bytes.as_slice());
+        let digest = hash.build();
         let id = Id::builder()
             .name(self.addr.to_id())
-            .digest(digest.to_lowercase())
+            .digest(digest)
             .arch(self.options.arch.to_string())
             .build();
         trace!(component = "transform", type = "rpm", "id is calculated to be {id}");

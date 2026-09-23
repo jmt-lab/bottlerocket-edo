@@ -1,4 +1,4 @@
-github := "bottlerocket-os"
+github := "sam-berning"
 
 setup:
     cargo install tomlq
@@ -243,6 +243,21 @@ sync-package kit package:
         is_go_module=true
     fi
 
+    go_major=""
+    spec_file="${source}/{{package}}/${pkg_name}.spec"
+    if [ -f "${spec_file}" ]; then
+        raw="$(grep -E '^\s*export\s+GO_MAJOR\s*=' "${spec_file}" \
+            | grep -v '^\s*#' \
+            | tail -n 1 \
+            | sed -E 's/^\s*export\s+GO_MAJOR\s*=\s*"?([^"]*)"?\s*$/\1/' \
+            || true)"
+        if [[ "${raw}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            go_major="${raw}"
+        elif [ -n "${raw}" ]; then
+            echo "warning: skipping non-literal GO_MAJOR=\"${raw}\" in ${spec_file}" >&2
+        fi
+    fi
+
     # ----- write [package] header -----
     {
         echo 'schema-version = "3"'
@@ -250,6 +265,9 @@ sync-package kit package:
         echo '[package]'
         echo "name = \"${pkg_name}\""
         echo "path = \"${source}/{{package}}\""
+        if [ -n "${go_major}" ]; then
+            echo "go-major = \"${go_major}\""
+        fi
         # Collect dependencies (with kernel-X_Y → kernel-X.Y mapping).
         deps=()
         for dep in ${depends}; do
@@ -278,17 +296,12 @@ sync-package kit package:
 
     # ----- write [[package.source]] entries -----
     if [ "${n_ext}" -eq 0 ]; then
-        # No external files → use the kit-wide source. Pick vendoring based on
-        # whether this package is a go module under sources, or otherwise
-        # default to the kit's cargo-vendor output.
         echo '' >> "${element}/package.toml"
         echo '[[package.source]]' >> "${element}/package.toml"
         echo "addr = \"//kits/{{kit}}/kit-src\"" >> "${element}/package.toml"
         if [ "${is_go_module}" = "true" ]; then
             echo "vendored = [\"//kits/{{kit}}/kit-go\"]" >> "${element}/package.toml"
         else
-            # TODO: Make optional — some packages (e.g. selinux-policy) don't
-            # actually need rust vendoring; remove this line manually if so.
             echo "vendored = [\"//kits/{{kit}}/kit-rust\"]" >> "${element}/package.toml"
         fi
     else
@@ -308,6 +321,7 @@ sync-package kit package:
             | [ .order[] as $u | { url: $u, files: .by[$u] } ]
             | map({
                 url: .url,
+                digest: .files[0].sha512,
                 out: ((.files[0].path) // (.url | split("/") | last)),
                 files: .files,
             })
@@ -317,10 +331,24 @@ sync-package kit package:
         for i in $(seq 0 $((n_groups - 1))); do
             grp="$(jq -c ".[${i}]" <<< "${grouped_json}")"
             url="$(jq --raw-output '.url' <<< "${grp}")"
+            digest="$(jq --raw-output '.digest' <<< "${grp}")"
+            ref="sha512:${digest}"
             out_name="$(jq --raw-output '.out' <<< "${grp}")"
-
-            # Compute the BLAKE3 hash of the upstream file (once per URL).
-            ref="$(curl -sL "${url}" | sha256sum | awk '{ print $1 }')"
+            # Rewrite the source URL to the Bottlerocket lookaside cache, keyed
+            # by the tarball filename (last URL path segment) and its sha512.
+            # edo's sha512 support means we can point at the mirror directly
+            # instead of hitting the upstream host at build time.
+            #
+            # Skip the rewrite when any file in the group is marked
+            # `force-upstream = true`. In old-twoliter (buildsys/src/cache.rs)
+            # that flag means the artifact was never uploaded to the lookaside
+            # mirror (typically license-gated NVIDIA blobs, kernel SRPMs, etc.),
+            # so `cache.bottlerocket.aws` returns S3 403 for those keys.
+            force_upstream="$(jq --raw-output '[.files[]["force-upstream"] // false] | any' <<< "${grp}")"
+            if [ "${force_upstream}" != "true" ]; then
+                filename="$(basename "${url}")"
+                url="https://cache.bottlerocket.aws/${filename}/${digest}/${filename}"
+            fi
 
             # Collect go-modules across every external-files entry sharing
             # this URL. Each entry yields zero or one module string.
@@ -341,9 +369,6 @@ sync-package kit package:
                         go_modules+=("${bundle_root}")
                     fi
                 else
-                    # No bundle-root-path: derive from out filename, stripping
-                    # `.tar.gz`/`.tgz` and the `-v` before a digit (GitHub
-                    # archive convention: `archive/v1.2.3` → `<name>-1.2.3/`).
                     mod="${out_name%.tar.gz}"
                     mod="${mod%.tgz}"
                     mod="$(sed -E 's/-v([0-9])/-\1/' <<< "${mod}")"
