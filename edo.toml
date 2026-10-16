@@ -1,0 +1,6 @@
+[container]
+pids_limit = -1
+ulimits = [
+    "nproc=65535:65535",
+    "nofile=1048576:1048576",
+]

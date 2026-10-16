@@ -1,4 +1,4 @@
-github := "sam-berning"
+github := "bottlerocket-os"
 
 setup:
     cargo install tomlq
