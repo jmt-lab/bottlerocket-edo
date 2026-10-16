@@ -566,7 +566,10 @@ impl TransformImpl for RPM2ImageTransform {
             .await?;
 
             // Now we run rpm2img :D
-            vfs.command("rpm2img", "bin/rpm2img", args).await?;
+            // Privileged: it installs RPMs into the image root with `rpm --root` and builds
+            // filesystems whose contents must stay root-owned.
+            vfs.command_privileged("rpm2img", "bin/rpm2img", args)
+                .await?;
 
             // We then just archive the output in build_root!
             let writer = ctx.storage().safe_start_layer().await?;

@@ -458,8 +458,9 @@ impl TransformImpl for PackageBuildTransform {
             )
             .await?;
 
-            // Step 9: Install spec-declared BuildRequires via dnf builddep
-            vfs.command(
+            // Step 9: Install spec-declared BuildRequires via dnf builddep. This is the only
+            // step that needs root: it installs into the SDK's system rpmdb and cross sysroot.
+            vfs.command_privileged(
                 "builddeps",
                 "dnf",
                 &[
